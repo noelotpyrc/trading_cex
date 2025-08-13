@@ -1,0 +1,25 @@
+{
+  "strategy_name": "Conservative Strategy",
+  "description": "All timeframes must agree for entry, exit on 4H overbought",
+  "entry_rsi_rules": {
+    "RSI_1H": 30,
+    "RSI_4H": 30,
+    "RSI_12H": 30,
+    "RSI_1D": 30
+  },
+  "entry_mode": "all",
+  "min_required_count": 2,
+  "exit_rsi_rules": {
+    "RSI_4H": 70
+  },
+  "exit_mode": "any",
+  "enable_profit_target": false,
+  "profit_target_pct": 0.15,
+  "enable_stop_loss": false,
+  "stop_loss_pct": -0.08,
+  "position_pct": 0.95,
+  "min_price": 1000.0,
+  "initial_cash": 100000,
+  "show_plot": true,
+  "verbose": true
+}

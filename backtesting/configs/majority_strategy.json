@@ -1,0 +1,22 @@
+{
+  "strategy_name": "Majority Strategy",
+  "description": "Majority of RSI must be oversold, exit on 12H overbought",
+  "entry_rsi_rules": {
+    "RSI_1H": 30,
+    "RSI_4H": 30,
+    "RSI_12H": 30,
+    "RSI_1D": 30
+  },
+  "entry_mode": "majority",
+  "exit_rsi_rules": {
+    "RSI_12H": 70
+  },
+  "exit_mode": "any",
+  "enable_profit_target": false,
+  "enable_stop_loss": false,
+  "position_pct": 0.95,
+  "min_price": 1000.0,
+  "initial_cash": 100000,
+  "show_plot": true,
+  "verbose": true
+}

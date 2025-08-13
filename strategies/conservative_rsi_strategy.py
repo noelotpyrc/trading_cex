@@ -22,16 +22,32 @@ class ConservativeRSIStrategy(bt.Strategy):
     """
     
     params = (
-        # RSI Thresholds
-        ('entry_threshold', 30),       # All RSI must be ≤ 30
-        ('exit_threshold', 60),        # 4h RSI ≥ 70 to exit
+        # Entry Strategy - Dictionary with column names and thresholds
+        ('entry_rsi_rules', {
+            'RSI_1H': 30,    # 1H RSI must be ≤ 30
+            'RSI_4H': 30,    # 4H RSI must be ≤ 30  
+            'RSI_12H': 30,   # 12H RSI must be ≤ 30
+            'RSI_1D': 30     # 1D RSI must be ≤ 30
+        }),
+        ('entry_mode', 'all'),                # 'all'=all rules must pass, 'any'=any rule passes, 'majority'=majority pass, 'count'=minimum count
+        ('min_required_count', 3),            # Minimum rules that must pass (if entry_mode='count')
+        
+        # Exit Strategy - Dictionary with column names and thresholds
+        ('exit_rsi_rules', {
+            'RSI_4H': 70,    # Exit when 4H RSI ≥ 70
+        }),
+        ('exit_mode', 'any'),                 # 'any'=any exit rule triggers exit, 'all'=all exit rules must trigger
+        ('enable_profit_target', False),      # Enable profit target exit
+        ('profit_target_pct', 0.20),          # 20% profit target
+        ('enable_stop_loss', False),          # Enable stop loss exit  
+        ('stop_loss_pct', -0.10),             # 10% stop loss
         
         # Position Management
-        ('position_pct', 0.95),        # Use 95% of available cash
+        ('position_pct', 0.95),               # Use 95% of available cash
         
         # Strategy Settings
-        ('min_price', 1.0),            # Minimum price to avoid penny stocks
-        ('verbose', True),             # Enable detailed logging
+        ('min_price', 1000.0),                # Minimum BTC price
+        ('verbose', True),                    # Enable detailed logging
     )
     
     def __init__(self):
@@ -42,11 +58,19 @@ class ConservativeRSIStrategy(bt.Strategy):
         self.dataopen = self.datas[0].open
         self.volume = self.datas[0].volume
         
-        # Multi-timeframe RSI indicators
-        self.rsi_4h = self.datas[0].RSI_4h
-        self.rsi_12h = self.datas[0].RSI_12h  
-        self.rsi_1d = self.datas[0].RSI_1d
-        self.rsi_3d = self.datas[0].RSI_3d
+        # Multi-timeframe RSI indicators (updated column names)
+        self.rsi_1h = self.datas[0].RSI_1H
+        self.rsi_4h = self.datas[0].RSI_4H
+        self.rsi_12h = self.datas[0].RSI_12H  
+        self.rsi_1d = self.datas[0].RSI_1D
+        
+        # Create mapping for dynamic access
+        self.rsi_indicators = {
+            'RSI_1H': self.rsi_1h,
+            'RSI_4H': self.rsi_4h,
+            'RSI_12H': self.rsi_12h,
+            'RSI_1D': self.rsi_1d
+        }
         
         # Order and position tracking
         self.order = None
@@ -64,9 +88,11 @@ class ConservativeRSIStrategy(bt.Strategy):
         # Trade log for analysis
         self.trades = []
         
-        self.log(f"Conservative RSI Strategy initialized")
-        self.log(f"Entry: ALL RSI ≤ {self.params.entry_threshold}")
-        self.log(f"Exit: 4h RSI ≥ {self.params.exit_threshold}")
+        self.log(f"Flexible RSI Strategy initialized")
+        self.log(f"Entry rules: {self.params.entry_rsi_rules}")
+        self.log(f"Entry mode: {self.params.entry_mode}")
+        self.log(f"Exit rules: {self.params.exit_rsi_rules}")
+        self.log(f"Exit mode: {self.params.exit_mode}")
     
     def log(self, txt, dt=None, force=False):
         """Logging function with timestamp"""
@@ -136,51 +162,104 @@ class ConservativeRSIStrategy(bt.Strategy):
     
     def get_rsi_values(self):
         """Get current RSI values for all timeframes, handling NaN"""
-        return {
-            '4h': self.rsi_4h[0],
-            '12h': self.rsi_12h[0], 
-            '1d': self.rsi_1d[0]
-        }
+        rsi_values = {}
+        for column_name, indicator in self.rsi_indicators.items():
+            try:
+                rsi_values[column_name] = indicator[0]
+            except (IndexError, AttributeError):
+                rsi_values[column_name] = np.nan
+        return rsi_values
     
     def check_entry_conditions(self):
-        """Check if all entry conditions are met"""
+        """Check if entry conditions are met based on flexible RSI rules"""
         rsi_values = self.get_rsi_values()
         
         # Price filter
         if self.dataclose[0] < self.params.min_price:
             return False, f"Price too low: ${self.dataclose[0]:.2f}"
         
-        # Check for NaN values - skip if any RSI is NaN
-        if any(np.isnan(rsi) for rsi in rsi_values.values()):
-            return False, "Skipping bar with NaN RSI values"
+        # Evaluate entry rules
+        rule_results = []
+        rule_details = []
         
-        # Check if ALL RSI timeframes are oversold
-        all_oversold = all(rsi <= self.params.entry_threshold for rsi in rsi_values.values())
+        for column, threshold in self.params.entry_rsi_rules.items():
+            if column not in rsi_values or np.isnan(rsi_values[column]):
+                # Skip rules with missing data
+                continue
+                
+            current_rsi = rsi_values[column]
+            rule_passed = current_rsi <= threshold
+            rule_results.append(rule_passed)
+            rule_details.append(f"{column}:{current_rsi:.1f}(≤{threshold})")
         
-        if all_oversold:
-            rsi_str = f"4h:{rsi_values['4h']:.1f}, 12h:{rsi_values['12h']:.1f}, 1d:{rsi_values['1d']:.1f}"
-            return True, f"ALL RSI oversold - {rsi_str}"
+        if not rule_results:
+            return False, "No valid RSI data for entry rules"
+        
+        # Apply entry mode logic
+        if self.params.entry_mode == 'all':
+            entry_signal = all(rule_results)
+            reason = f"ALL rules pass - {', '.join(rule_details)}" if entry_signal else f"Not all rules pass - {', '.join(rule_details)}"
+        elif self.params.entry_mode == 'any':
+            entry_signal = any(rule_results)
+            reason = f"At least one rule passes - {', '.join(rule_details)}" if entry_signal else f"No rules pass - {', '.join(rule_details)}"
+        elif self.params.entry_mode == 'majority':
+            entry_signal = sum(rule_results) > len(rule_results) / 2
+            reason = f"Majority pass ({sum(rule_results)}/{len(rule_results)}) - {', '.join(rule_details)}"
+        elif self.params.entry_mode == 'count':
+            entry_signal = sum(rule_results) >= self.params.min_required_count
+            reason = f"Required count met ({sum(rule_results)}>={self.params.min_required_count}) - {', '.join(rule_details)}"
         else:
-            # Find which timeframes are not oversold
-            not_oversold = [tf for tf, rsi in rsi_values.items() if rsi > self.params.entry_threshold]
-            return False, f"Not all oversold. Above threshold: {not_oversold}"
+            return False, f"Unknown entry_mode: {self.params.entry_mode}"
+        
+        return entry_signal, reason
     
     def check_exit_conditions(self):
-        """Check if exit conditions are met"""
+        """Check if exit conditions are met based on flexible RSI rules and other exits"""
         if not self.position.size:
             return False, ""
         
         rsi_values = self.get_rsi_values()
         
-        # Check for NaN values - skip if 4h RSI is NaN
-        if np.isnan(rsi_values['4h']):
-            return False, "Skipping exit check - 4h RSI is NaN"
+        # Check RSI-based exit rules
+        rsi_exit_triggered = False
+        rsi_exit_reason = ""
         
-        # Only exit condition: 4h RSI overbought
-        if rsi_values['4h'] >= self.params.exit_threshold:
-            return True, f"4h RSI overbought ({rsi_values['4h']:.1f})"
+        if self.params.exit_rsi_rules:
+            rule_results = []
+            rule_details = []
+            
+            for column, threshold in self.params.exit_rsi_rules.items():
+                if column not in rsi_values or np.isnan(rsi_values[column]):
+                    continue
+                    
+                current_rsi = rsi_values[column]
+                rule_passed = current_rsi >= threshold  # Exit when RSI is overbought
+                rule_results.append(rule_passed)
+                rule_details.append(f"{column}:{current_rsi:.1f}(≥{threshold})")
+            
+            if rule_results:
+                if self.params.exit_mode == 'any':
+                    rsi_exit_triggered = any(rule_results)
+                elif self.params.exit_mode == 'all':
+                    rsi_exit_triggered = all(rule_results)
+                
+                if rsi_exit_triggered:
+                    rsi_exit_reason = f"RSI exit - {', '.join(rule_details)}"
         
-        return False, ""
+        # Check profit target exit
+        if self.params.enable_profit_target and self.entry_price:
+            pnl_pct = (self.dataclose[0] - self.entry_price) / self.entry_price
+            if pnl_pct >= self.params.profit_target_pct:
+                return True, f"Profit target hit: {pnl_pct*100:.2f}%"
+        
+        # Check stop loss exit
+        if self.params.enable_stop_loss and self.entry_price:
+            pnl_pct = (self.dataclose[0] - self.entry_price) / self.entry_price
+            if pnl_pct <= self.params.stop_loss_pct:
+                return True, f"Stop loss hit: {pnl_pct*100:.2f}%"
+        
+        # Return RSI exit result
+        return rsi_exit_triggered, rsi_exit_reason
     
     def next(self):
         """Main strategy logic"""
@@ -259,7 +338,7 @@ class ConservativeRSIStrategy(bt.Strategy):
         win_rate = (self.win_count / self.trade_count * 100) if self.trade_count > 0 else 0
         
         print(f'\n{"="*60}')
-        print(f'🏁 CONSERVATIVE RSI STRATEGY RESULTS')
+        print(f'🏁 FLEXIBLE RSI STRATEGY RESULTS')
         print(f'{"="*60}')
         print(f'💰 Final Portfolio Value: ${final_value:,.2f}')
         print(f'📊 Total Return: {total_return:+.2f}%')
@@ -288,17 +367,23 @@ class ConservativeRSIStrategy(bt.Strategy):
         
         # Save detailed results
         if self.trades:
+            from pathlib import Path
+            
+            # Create results directory if it doesn't exist
+            results_dir = Path("../results")
+            results_dir.mkdir(exist_ok=True)
+            
             results_df = pd.DataFrame(self.trades)
-            results_filename = f'conservative_rsi_results_{pd.Timestamp.now().strftime("%Y%m%d_%H%M")}.csv'
+            results_filename = results_dir / f'flexible_rsi_results_{pd.Timestamp.now().strftime("%Y%m%d_%H%M")}.csv'
             results_df.to_csv(results_filename, index=False)
             self.log(f'💾 Detailed results saved: {results_filename}', force=True)
 
 
-# Data feed class for crypto RSI data
-class CryptoRSIData(bt.feeds.PandasData):
-    """Custom data feed for merged crypto data with multi-timeframe RSI"""
+# Data feed class for smooth multi-timeframe RSI data
+class SmoothRSIData(bt.feeds.PandasData):
+    """Custom data feed for smooth multi-timeframe RSI data"""
     
-    lines = ('RSI_4h', 'RSI_12h', 'RSI_1d', 'RSI_3d')
+    lines = ('RSI_1H', 'RSI_4H', 'RSI_12H', 'RSI_1D')
     
     params = (
         ('datetime', None),  # Use index as datetime
@@ -308,8 +393,8 @@ class CryptoRSIData(bt.feeds.PandasData):
         ('close', 'close'),
         ('volume', 'Volume'),
         ('openinterest', None),
-        ('RSI_4h', 'RSI_4h'),
-        ('RSI_12h', 'RSI_12h'),
-        ('RSI_1d', 'RSI_1d'),
-        ('RSI_3d', 'RSI_3d'),
+        ('RSI_1H', 'RSI_1H'),
+        ('RSI_4H', 'RSI_4H'),
+        ('RSI_12H', 'RSI_12H'),
+        ('RSI_1D', 'RSI_1D'),
     )
