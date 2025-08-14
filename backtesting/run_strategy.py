@@ -24,6 +24,9 @@ from strategies.conservative_rsi_strategy import ConservativeRSIStrategy, Smooth
 
 
 def run_custom_strategy(
+    # === SIGNAL TYPE ===
+    signal_type='long',  # 'long' or 'short'
+    
     # === ENTRY STRATEGY SETTINGS ===
     entry_rsi_rules={'RSI_4H': 30, 'RSI_12H': 30, 'RSI_1D': 30},
     entry_mode='all',  # 'all', 'any', 'majority', 'count'
@@ -104,6 +107,7 @@ def run_custom_strategy(
     
     # Build strategy parameters
     strategy_params = {
+        'signal_type': signal_type,
         'entry_rsi_rules': entry_rsi_rules,
         'entry_mode': entry_mode,
         'min_required_count': min_required_count,
@@ -120,20 +124,23 @@ def run_custom_strategy(
     
     print("🎯 CUSTOM RSI STRATEGY CONFIGURATION")
     print("=" * 50)
+    print(f"🎭 Signal Type: {signal_type.upper()}")
     print(f"💰 Initial Capital: ${initial_cash:,}")
     print(f"📊 Position Size: {position_pct*100:.0f}% of available cash")
     print()
     print("📈 ENTRY RULES:")
+    entry_operator = "≤" if signal_type == 'long' else "≥"
     for rsi_col, threshold in entry_rsi_rules.items():
-        print(f"   • {rsi_col} ≤ {threshold}")
+        print(f"   • {rsi_col} {entry_operator} {threshold}")
     print(f"   • Entry Mode: {entry_mode.upper()}")
     if entry_mode == 'count':
         print(f"   • Min Required: {min_required_count} rules")
     print()
     print("📉 EXIT RULES:")
     if exit_rsi_rules:
+        exit_operator = "≥" if signal_type == 'long' else "≤"
         for rsi_col, threshold in exit_rsi_rules.items():
-            print(f"   • {rsi_col} ≥ {threshold}")
+            print(f"   • {rsi_col} {exit_operator} {threshold}")
         print(f"   • Exit Mode: {exit_mode.upper()}")
     if enable_profit_target:
         print(f"   • Profit Target: {profit_target_pct*100:.0f}%")
