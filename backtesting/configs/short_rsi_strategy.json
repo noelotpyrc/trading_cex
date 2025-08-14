@@ -3,10 +3,10 @@
   "description": "Short overbought RSI conditions (opposite of long strategy)",
   "signal_type": "short",
   "entry_rsi_rules": {
-    "RSI_1H": 80,
-    "RSI_4H": 80,
-    "RSI_12H": 80,
-    "RSI_1D": 80
+    "RSI_1H": 75,
+    "RSI_4H": 75,
+    "RSI_12H": 75,
+    "RSI_1D": 75
   },
   "entry_mode": "majority",
   "exit_rsi_rules": {
