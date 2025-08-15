@@ -44,6 +44,63 @@ def calculate_rsi_wilder(prices, period=14):
     return pd.Series(rsi_values, index=prices.index)
 
 
+def calculate_sma_1h(prices, periods=[14, 21, 35]):
+    """
+    Calculate Simple Moving Averages for 1H data
+    
+    Args:
+        prices: Series of close prices
+        periods: List of periods to calculate SMA for (default: [14, 21, 35])
+    
+    Returns:
+        Dictionary of SMA series with keys like 'SMA_14_1H', 'SMA_21_1H', 'SMA_35_1H'
+    """
+    sma_dict = {}
+    
+    for period in periods:
+        sma_values = prices.rolling(window=period, min_periods=period).mean()
+        sma_dict[f'SMA_{period}_1H'] = sma_values
+    
+    return sma_dict
+
+
+def calculate_bollinger_bands_1h(prices, period=20, std_multiplier=2.0):
+    """
+    Calculate Bollinger Bands for 1H data
+    
+    Args:
+        prices: Series of close prices
+        period: Period for moving average and standard deviation (default: 20)
+        std_multiplier: Standard deviation multiplier (default: 2.0)
+    
+    Returns:
+        Dictionary with 'BB_Middle_1H', 'BB_Upper_1H', 'BB_Lower_1H', 'BB_Width_1H', 'BB_Percent_1H'
+    """
+    # Middle band (SMA)
+    bb_middle = prices.rolling(window=period, min_periods=period).mean()
+    
+    # Standard deviation
+    bb_std = prices.rolling(window=period, min_periods=period).std()
+    
+    # Upper and lower bands
+    bb_upper = bb_middle + (bb_std * std_multiplier)
+    bb_lower = bb_middle - (bb_std * std_multiplier)
+    
+    # Bollinger Band Width (volatility measure)
+    bb_width = (bb_upper - bb_lower) / bb_middle
+    
+    # %B (Bollinger Band Percent) - where price is within the bands
+    bb_percent = (prices - bb_lower) / (bb_upper - bb_lower)
+    
+    return {
+        'BB_Middle_1H': bb_middle,
+        'BB_Upper_1H': bb_upper,
+        'BB_Lower_1H': bb_lower,
+        'BB_Width_1H': bb_width,
+        'BB_Percent_1H': bb_percent
+    }
+
+
 def get_period_start(timestamp, timeframe):
     if timeframe == '4H':
         hour = (timestamp.hour // 4) * 4
@@ -129,8 +186,8 @@ def calculate_smooth_rsi_timeframe(df, timeframe):
 
 
 if __name__ == "__main__":
-    input_file = "data/BINANCE_BTCUSDT.P, 60.csv"
-    output_file = "data/binance_btcusdt.p_smooth_multi_rsi_corrected.csv"
+    input_file = "data/BINANCE_SOLUSDT.P, 60.csv"
+    output_file = "data/binance_solusdt.p_smooth_multi_rsi_corrected.csv"
     
     print("🔧 Final Working Smooth Multi-Timeframe RSI Calculator")
     print("=" * 60)
@@ -146,6 +203,18 @@ if __name__ == "__main__":
     print("Calculating 1H RSI...")
     df['RSI_1H'] = calculate_rsi_wilder(df['close'], 14)
     
+    # Calculate 1H SMAs
+    print("Calculating 1H SMAs (14, 21, 35)...")
+    sma_dict = calculate_sma_1h(df['close'], [14, 21, 35])
+    for sma_name, sma_values in sma_dict.items():
+        df[sma_name] = sma_values
+    
+    # Calculate 1H Bollinger Bands
+    print("Calculating 1H Bollinger Bands (20, 2.0)...")
+    bb_dict = calculate_bollinger_bands_1h(df['close'], period=20, std_multiplier=2.0)
+    for bb_name, bb_values in bb_dict.items():
+        df[bb_name] = bb_values
+    
     # Calculate smooth RSI for each timeframe
     timeframes = ['4H', '12H', '1D']
     
@@ -154,7 +223,9 @@ if __name__ == "__main__":
         df[f'RSI_{timeframe}'] = rsi_values
     
     # Select output columns and reset index
-    output_cols = ['open', 'high', 'low', 'close', 'Volume', 'RSI_1H', 'RSI_4H', 'RSI_12H', 'RSI_1D']
+    output_cols = ['open', 'high', 'low', 'close', 'Volume', 'RSI_1H', 'RSI_4H', 'RSI_12H', 'RSI_1D', 
+                   'SMA_14_1H', 'SMA_21_1H', 'SMA_35_1H', 
+                   'BB_Middle_1H', 'BB_Upper_1H', 'BB_Lower_1H', 'BB_Width_1H', 'BB_Percent_1H']
     result_df = df[output_cols].reset_index()
     
     # Save result
@@ -192,5 +263,5 @@ if __name__ == "__main__":
     
     # Show sample data
     print(f"\nSample data (last 5 rows):")
-    sample_cols = ['time', 'close', 'RSI_1H', 'RSI_4H', 'RSI_12H', 'RSI_1D']
+    sample_cols = ['time', 'close', 'RSI_1H', 'RSI_4H', 'RSI_12H', 'RSI_1D', 'SMA_14_1H', 'BB_Upper_1H', 'BB_Lower_1H', 'BB_Width_1H']
     print(result_df[sample_cols].tail().round(2))

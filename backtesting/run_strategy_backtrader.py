@@ -20,7 +20,7 @@ matplotlib.use('TkAgg')  # Use TkAgg backend for display
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from strategies.conservative_rsi_strategy import ConservativeRSIStrategy, SmoothRSIData
+from strategies.rsi_strategy_backtrader import ConservativeRSIStrategy, SmoothRSIData
 
 
 def run_custom_strategy(
@@ -44,7 +44,11 @@ def run_custom_strategy(
     
     # === POSITION MANAGEMENT ===
     position_pct=0.95,  # Use 95% of available cash
-    min_price=1000.0,   # Minimum BTC price filter
+    min_price=10.0,   # Minimum BTC price filter
+    
+    # === FILTERS ===
+    enable_bb_filter=True,  # Enable Bollinger Band filter
+    bb_percent_threshold=0.8,  # BB Percent threshold for short entries
     
     # === DISPLAY SETTINGS ===
     initial_cash=100000,
@@ -119,6 +123,8 @@ def run_custom_strategy(
         'stop_loss_pct': stop_loss_pct,
         'position_pct': position_pct,
         'min_price': min_price,
+        'enable_bb_filter': enable_bb_filter,
+        'bb_percent_threshold': bb_percent_threshold,
         'verbose': verbose
     }
     
