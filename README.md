@@ -76,14 +76,6 @@ cd backtesting
 python debug_strategy.py
 ```
 
-## 📊 Strategy Performance
-
-The Conservative RSI Strategy has shown:
-- **Total Return**: +98.50% over ~5.5 years
-- **Win Rate**: 72.7% (8 wins out of 11 trades)
-- **Sharpe Ratio**: 1.56
-- **Max Drawdown**: 24.12%
-
 ## 🔧 Dependencies
 
 **Core Libraries:**
