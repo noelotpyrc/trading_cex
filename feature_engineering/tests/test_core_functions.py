@@ -10,7 +10,7 @@ import os
 # Add parent directory to path to import core_functions
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core_functions import get_lags, calculate_price_differences, calculate_log_transforms, calculate_percentage_changes, calculate_cumulative_returns, calculate_zscore
+from core_functions import get_lags, calculate_price_differences, calculate_log_transforms, calculate_percentage_changes, calculate_cumulative_returns, calculate_zscore, calculate_sma, calculate_ema, calculate_wma, calculate_ma_crossovers, calculate_ma_distance, calculate_macd, calculate_volume_ma
 
 
 def test_get_lags():
@@ -299,6 +299,212 @@ def test_zscore():
     print(f"Test passed: {pd.isna(result3) and pd.isna(expected3)}")
 
 
+def test_sma():
+    """Simple test for calculate_sma function"""
+    print("\n" + "="*50)
+    print("Testing calculate_sma...")
+
+    # Test data
+    test_data = pd.Series([100, 102, 98, 105, 103])
+    print(f"Test data: {test_data.values}")
+
+    # Window 3
+    result1 = calculate_sma(test_data, 3)
+    expected1 = test_data.rolling(window=3).mean().iloc[-1]
+    print(f"Window 3 SMA: {result1}")
+    print(f"Expected: {expected1}")
+    print(f"Test passed: {abs(result1 - expected1) < 1e-9}")
+
+    # Window 5
+    result2 = calculate_sma(test_data, 5)
+    expected2 = test_data.rolling(window=5).mean().iloc[-1]
+    print(f"Window 5 SMA: {result2}")
+    print(f"Expected: {expected2}")
+    print(f"Test passed: {abs(result2 - expected2) < 1e-9}")
+
+    # Insufficient window
+    result3 = calculate_sma(test_data, 6)
+    print(f"Insufficient window (6): {result3}")
+    print(f"Expected: {np.nan}")
+    print(f"Test passed: {pd.isna(result3)}")
+
+
+def test_ema():
+    """Simple test for calculate_ema function"""
+    print("\n" + "="*50)
+    print("Testing calculate_ema...")
+
+    test_data = pd.Series([100, 102, 98, 105, 103])
+    print(f"Test data: {test_data.values}")
+
+    # span=3
+    result1 = calculate_ema(test_data, 3)
+    expected1 = test_data.ewm(span=3).mean().iloc[-1]
+    print(f"EMA span 3: {result1}")
+    print(f"Expected: {expected1}")
+    print(f"Test passed: {abs(result1 - expected1) < 1e-9}")
+
+    # span=5
+    result2 = calculate_ema(test_data, 5)
+    expected2 = test_data.ewm(span=5).mean().iloc[-1]
+    print(f"EMA span 5: {result2}")
+    print(f"Expected: {expected2}")
+    print(f"Test passed: {abs(result2 - expected2) < 1e-9}")
+
+    # insufficient
+    result3 = calculate_ema(pd.Series([100, 101]), 5)
+    print(f"Insufficient data: {result3}")
+    print(f"Expected: {np.nan}")
+    print(f"Test passed: {pd.isna(result3)}")
+
+
+def test_wma():
+    """Simple test for calculate_wma function"""
+    print("\n" + "="*50)
+    print("Testing calculate_wma...")
+
+    test_data = pd.Series([100, 102, 98, 105, 103])
+    print(f"Test data: {test_data.values}")
+
+    # Window 3
+    window = 3
+    result1 = calculate_wma(test_data, window)
+    values1 = test_data.tail(window).values  # oldest->newest
+    weights1 = np.arange(1, window + 1)
+    expected1 = np.sum(weights1 * values1) / np.sum(weights1)
+    print(f"WMA window 3: {result1}")
+    print(f"Expected: {expected1}")
+    print(f"Test passed: {abs(result1 - expected1) < 1e-9}")
+
+    # Window 5
+    window = 5
+    result2 = calculate_wma(test_data, window)
+    values2 = test_data.tail(window).values
+    weights2 = np.arange(1, window + 1)
+    expected2 = np.sum(weights2 * values2) / np.sum(weights2)
+    print(f"WMA window 5: {result2}")
+    print(f"Expected: {expected2}")
+    print(f"Test passed: {abs(result2 - expected2) < 1e-9}")
+
+    # Insufficient window
+    result3 = calculate_wma(test_data, 6)
+    print(f"Insufficient window (6): {result3}")
+    print(f"Expected: {np.nan}")
+    print(f"Test passed: {pd.isna(result3)}")
+
+
+def test_ma_crossovers():
+    """Simple test for calculate_ma_crossovers function"""
+    print("\n" + "="*50)
+    print("Testing calculate_ma_crossovers...")
+
+    test_data = pd.Series([100, 102, 98, 105, 103])
+    print(f"Test data: {test_data.values}")
+
+    fast_window, slow_window = 2, 3
+    result1 = calculate_ma_crossovers(test_data, fast_window, slow_window)
+
+    ma_fast = test_data.rolling(window=fast_window).mean().iloc[-1]
+    ma_slow = test_data.rolling(window=slow_window).mean().iloc[-1]
+    expected1 = {
+        'ma_cross_diff': ma_fast - ma_slow,
+        'ma_cross_ratio': ma_fast / ma_slow if ma_slow != 0 else np.nan,
+        'ma_cross_signal': 1 if ma_fast > ma_slow else 0
+    }
+
+    print(f"fast={fast_window}, slow={slow_window}: {result1}")
+    print(f"Expected: {expected1}")
+    print(f"Test passed: {abs(result1['ma_cross_diff'] - expected1['ma_cross_diff']) < 1e-9 and abs(result1['ma_cross_ratio'] - expected1['ma_cross_ratio']) < 1e-9 and result1['ma_cross_signal'] == expected1['ma_cross_signal']}")
+
+    # Insufficient data case
+    short_data = pd.Series([100, 101])
+    result2 = calculate_ma_crossovers(short_data, 3, 4)
+    expected2 = {
+        'ma_cross_diff': np.nan,
+        'ma_cross_ratio': np.nan,
+        'ma_cross_signal': np.nan
+    }
+    print(f"Insufficient data: {result2}")
+    print(f"Expected: {expected2}")
+    print(f"Test passed: {all(pd.isna(result2[k]) for k in expected2.keys())}")
+
+
+def test_ma_distance():
+    """Simple test for calculate_ma_distance function"""
+    print("\n" + "="*50)
+    print("Testing calculate_ma_distance...")
+
+    price = 105.0
+    ma_val = 100.0
+    result1 = calculate_ma_distance(price, ma_val)
+    expected1 = {
+        'ma_distance': price - ma_val,
+        'ma_distance_pct': ((price - ma_val) / ma_val) * 100
+    }
+    print(f"price={price}, ma={ma_val}: {result1}")
+    print(f"Expected: {expected1}")
+    print(f"Test passed: {abs(result1['ma_distance'] - expected1['ma_distance']) < 1e-9 and abs(result1['ma_distance_pct'] - expected1['ma_distance_pct']) < 1e-9}")
+
+    # ma_value zero -> pct NaN
+    price2 = 100.0
+    ma_val2 = 0.0
+    result2 = calculate_ma_distance(price2, ma_val2)
+    print(f"ma=0 case: {result2}")
+    print(f"Expected: {{'ma_distance': nan, 'ma_distance_pct': nan}}")
+    print(f"Test passed: {pd.isna(result2['ma_distance']) and pd.isna(result2['ma_distance_pct'])}")
+
+    # ma_value NaN
+    price3 = 100.0
+    ma_val3 = np.nan
+    result3 = calculate_ma_distance(price3, ma_val3)
+    print(f"ma=NaN case: {result3}")
+    print(f"Expected: {{'ma_distance': nan, 'ma_distance_pct': nan}}")
+    print(f"Test passed: {pd.isna(result3['ma_distance']) and pd.isna(result3['ma_distance_pct'])}")
+
+
+def test_macd():
+    """Simple test for calculate_macd function"""
+    print("\n" + "="*50)
+    print("Testing calculate_macd...")
+
+    # Use small spans so short series works
+    test_data = pd.Series([100, 102, 98, 105, 103])
+    fast, slow, signal = 3, 5, 2
+    result1 = calculate_macd(test_data, fast, slow, signal)
+
+    ema_fast = test_data.ewm(span=fast).mean()
+    ema_slow = test_data.ewm(span=slow).mean()
+    macd_series = ema_fast - ema_slow
+    macd_line_exp = macd_series.iloc[-1]
+    macd_signal_exp = macd_series.ewm(span=signal).mean().iloc[-1]
+    macd_hist_exp = macd_line_exp - macd_signal_exp
+
+    print(f"fast={fast}, slow={slow}, signal={signal}: {result1}")
+    print(f"Expected line/signal/hist: {macd_line_exp}, {macd_signal_exp}, {macd_hist_exp}")
+    print(f"Test passed: {abs(result1['macd_line'] - macd_line_exp) < 1e-9 and abs(result1['macd_signal'] - macd_signal_exp) < 1e-9 and abs(result1['macd_histogram'] - macd_hist_exp) < 1e-9}")
+
+    # Insufficient data for given spans
+    short = pd.Series([100, 101])
+    res2 = calculate_macd(short, 12, 26, 9)
+    print(f"Insufficient data defaults: {res2}")
+    print(f"Expected: {{'macd_line': np.nan, 'macd_signal': np.nan, 'macd_histogram': np.nan}}")
+    print(f"Test passed: {pd.isna(res2['macd_line']) and pd.isna(res2['macd_signal']) and pd.isna(res2['macd_histogram'])}")
+
+
+def test_volume_ma():
+    """Simple test for calculate_volume_ma function (wraps SMA)"""
+    print("\n" + "="*50)
+    print("Testing calculate_volume_ma...")
+
+    vol = pd.Series([1000, 1200, 800, 1500, 1100])
+    window = 3
+    res = calculate_volume_ma(vol, window)
+    exp = vol.rolling(window=window).mean().iloc[-1]
+    print(f"Volume MA window {window}: {res}")
+    print(f"Expected: {exp}")
+    print(f"Test passed: {abs(res - exp) < 1e-9}")
+
+
 if __name__ == '__main__':
     test_get_lags()
     test_price_differences()
@@ -306,3 +512,10 @@ if __name__ == '__main__':
     test_percentage_changes()
     test_cumulative_returns()
     test_zscore()
+    test_sma()
+    test_ema()
+    test_wma()
+    test_ma_crossovers()
+    test_ma_distance()
+    test_macd()
+    test_volume_ma()
