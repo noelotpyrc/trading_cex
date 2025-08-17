@@ -31,72 +31,59 @@ def get_lags(data: pd.Series, lags: List[int], column_name: str = "close") -> Di
     return result
 
 
-def calculate_price_differences(ohlcv: pd.DataFrame, lag: int = 0) -> Dict[str, float]:
-    """2. Price Differences: Calculate price differences for a specific lag in OHLCV data"""
-    if len(ohlcv) == 0:
+def calculate_price_differences(open_s: pd.Series, high_s: pd.Series, low_s: pd.Series, close_s: pd.Series, lag: int = 0) -> Dict[str, float]:
+    """2. Price Differences: Calculate differences for a specific lag in OHLC data
+
+    Apply on: open, high, low, close series (aligned and same length)
+    """
+    if len(close_s) == 0:
         return {}
-    
-    # Check required columns exist
-    required_cols = ['open', 'high', 'low', 'close']
-    if not all(col in ohlcv.columns for col in required_cols):
-        return {
-            'close_open_diff': np.nan,
-            'high_low_range': np.nan,
-            'price_change': np.nan
-        }
-    
+
     # Calculate the actual row index based on lag
     # lag 0 = current row (last), lag 1 = previous row, lag 2 = two back, etc.
     row_idx = -1 - lag
-    
+
     # Check if the row exists
-    if abs(row_idx) > len(ohlcv):
+    if abs(row_idx) > len(close_s):
         return {
             'close_open_diff': np.nan,
             'high_low_range': np.nan,
             'price_change': np.nan
         }
-    
-    current_row = ohlcv.iloc[row_idx]
-    
+
     # Create column names with lag terminology
     if lag == 0:
         row_suffix = "_current"
     else:
         row_suffix = f"_lag_{lag}"
-    
+
     result = {
-        f'close_open_diff{row_suffix}': current_row['close'] - current_row['open'],
-        f'high_low_range{row_suffix}': current_row['high'] - current_row['low']
+        f'close_open_diff{row_suffix}': close_s.iloc[row_idx] - open_s.iloc[row_idx],
+        f'high_low_range{row_suffix}': high_s.iloc[row_idx] - low_s.iloc[row_idx]
     }
-    
+
     # Calculate close change for the specific row we're analyzing
-    # Check if this row has a previous row to calculate close - close_previous
-    # Since row_idx is always negative, we check if row_idx - 1 is within bounds
-    if abs(row_idx - 1) <= len(ohlcv):
-        prev_row = ohlcv.iloc[row_idx - 1]  # Move backward one row (e.g., -2 - 1 = -3)
-        result[f'close_change{row_suffix}'] = current_row['close'] - prev_row['close']
+    if abs(row_idx - 1) <= len(close_s):
+        prev_close = close_s.iloc[row_idx - 1]
+        result[f'close_change{row_suffix}'] = close_s.iloc[row_idx] - prev_close
     else:
         result[f'close_change{row_suffix}'] = np.nan
-    
+
     return result
 
 
-def calculate_log_transforms(ohlcv: pd.DataFrame, columns: List[str] = ['open', 'high', 'low', 'close', 'volume']) -> Dict[str, float]:
-    """3. Log Transformations: log(columns) for specified columns"""
-    if len(ohlcv) == 0:
+def calculate_log_transform(series: pd.Series, column_name: str = 'close') -> Dict[str, float]:
+    """3. Log Transformation: log(series)
+
+    Apply on: open, high, low, close, volume (positive values only)
+    """
+    if len(series) == 0:
         return {}
-    
-    current = ohlcv.iloc[-1]
-    result = {}
-    
-    for col in columns:
-        if col in ohlcv.columns and current[col] > 0:
-            result[f'log_{col}'] = np.log(current[col])
-        else:
-            result[f'log_{col}'] = np.nan
-    
-    return result
+
+    value = series.iloc[-1]
+    if value > 0:
+        return {f'log_{column_name}': np.log(value)}
+    return {f'log_{column_name}': np.nan}
 
 
 def calculate_percentage_changes(data: pd.Series, lag: int = 0, column_name: str = "close") -> Dict[str, float]:
@@ -133,39 +120,48 @@ def calculate_percentage_changes(data: pd.Series, lag: int = 0, column_name: str
     return result
 
 
-def calculate_cumulative_returns(data: pd.Series, windows: List[int]) -> Dict[str, float]:
-    """5. Cumulative Returns: Sum of log returns over rolling windows"""
+def calculate_cumulative_returns(data: pd.Series, windows: List[int], column_name: str = "close") -> Dict[str, float]:
+    """5. Cumulative Returns: Sum of log returns over rolling windows
+
+    Apply on: close
+    """
     result = {}
     
     if len(data) < 2:
         for window in windows:
-            result[f'cum_return_{window}'] = np.nan
+            result[f'{column_name}_cum_return_{window}'] = np.nan
         return result
     
     log_returns = np.log(data / data.shift(1)).dropna()
     
     for window in windows:
         if len(log_returns) >= window:
-            result[f'cum_return_{window}'] = log_returns.tail(window).sum()
+            result[f'{column_name}_cum_return_{window}'] = log_returns.tail(window).sum()
         else:
-            result[f'cum_return_{window}'] = np.nan
+            result[f'{column_name}_cum_return_{window}'] = np.nan
     
     return result
 
 
-def calculate_zscore(data: pd.Series, window: int) -> float:
-    """6. Z-Scores: (price - rolling_mean) / rolling_std"""
+def calculate_zscore(data: pd.Series, window: int, column_name: str = "close") -> Dict[str, float]:
+    """6. Z-Scores: (price - rolling_mean) / rolling_std
+
+    Apply on: any numeric series (e.g., close, volume)
+    Returns: { '{column_name}_zscore_{window}': value }
+    """
+    key = f"{column_name}_zscore_{window}"
     if len(data) < window:
-        return np.nan
-    
+        return {key: np.nan}
+
     rolling_data = data.tail(window)
     mean = rolling_data.mean()
     std = rolling_data.std()
-    
+
     if std == 0:
-        return np.nan
-    
-    return (data.iloc[-1] - mean) / std
+        return {key: np.nan}
+
+    value = (data.iloc[-1] - mean) / std
+    return {key: float(value)}
 
 
 def calculate_volume_lags_and_changes(volume: pd.Series, lags: List[int]) -> Dict[str, float]:
@@ -195,129 +191,168 @@ def calculate_volume_lags_and_changes(volume: pd.Series, lags: List[int]) -> Dic
 # MOVING AVERAGES AND TREND FEATURES (Features 9-15)
 # =============================================================================
 
-def calculate_sma(data: pd.Series, window: int) -> float:
-    """9. Simple Moving Average"""
-    if len(data) < window:
-        return np.nan
-    return data.rolling(window=window).mean().iloc[-1]
+def calculate_sma(series: pd.Series, window: int, column_name: str = 'close') -> Dict[str, float]:
+    """9. Simple Moving Average
+
+    Apply on: close, open, high, low, volume
+    Returns: { '{column_name}_sma_{window}': value }
+    """
+    key = f"{column_name}_sma_{window}"
+    if len(series) < window:
+        return {key: np.nan}
+    value = series.rolling(window=window).mean().iloc[-1]
+    return {key: float(value)}
 
 
-def calculate_ema(data: pd.Series, span: int) -> float:
-    """10. Exponential Moving Average"""
-    if len(data) < span:
-        return np.nan
-    return data.ewm(span=span).mean().iloc[-1]
+def calculate_ema(series: pd.Series, span: int, column_name: str = 'close') -> Dict[str, float]:
+    """10. Exponential Moving Average
+
+    Apply on: close, open, high, low, volume
+    Returns: { '{column_name}_ema_{span}': value }
+    """
+    key = f"{column_name}_ema_{span}"
+    if len(series) < span:
+        return {key: np.nan}
+    value = series.ewm(span=span).mean().iloc[-1]
+    return {key: float(value)}
 
 
-def calculate_wma(data: pd.Series, window: int) -> float:
-    """11. Weighted Moving Average"""
-    if len(data) < window:
-        return np.nan
-    
+def calculate_wma(series: pd.Series, window: int, column_name: str = 'close') -> Dict[str, float]:
+    """11. Weighted Moving Average
+
+    Apply on: close, open, high, low, volume
+    Returns: { '{column_name}_wma_{window}': value }
+    """
+    key = f"{column_name}_wma_{window}"
+    if len(series) < window:
+        return {key: np.nan}
     weights = np.arange(1, window + 1)
-    values = data.tail(window).values
-    return np.sum(weights * values) / np.sum(weights)
+    values = series.tail(window).values
+    value = float(np.sum(weights * values) / np.sum(weights))
+    return {key: value}
 
 
-def calculate_ma_crossovers(data: pd.Series, fast_window: int, slow_window: int) -> Dict[str, float]:
-    """12. Moving Average Crossovers"""
-    if len(data) < max(fast_window, slow_window):
+def calculate_ma_crossovers(series: pd.Series, fast_window: int, slow_window: int, column_name: str = 'close') -> Dict[str, float]:
+    """12. Moving Average Crossovers
+
+    Apply on: close (typically)
+    Returns keys with windows encoded, e.g., '{col}_ma_cross_diff_5_20'
+    """
+    if len(series) < max(fast_window, slow_window):
         return {
-            'ma_cross_diff': np.nan,
-            'ma_cross_ratio': np.nan,
-            'ma_cross_signal': np.nan
+            f'{column_name}_ma_cross_diff_{fast_window}_{slow_window}': np.nan,
+            f'{column_name}_ma_cross_ratio_{fast_window}_{slow_window}': np.nan,
+            f'{column_name}_ma_cross_signal_{fast_window}_{slow_window}': np.nan
         }
-    
-    ma_fast = calculate_sma(data, fast_window)
-    ma_slow = calculate_sma(data, slow_window)
-    
-    diff = ma_fast - ma_slow
-    ratio = ma_fast / ma_slow if ma_slow != 0 else np.nan
-    signal = 1 if ma_fast > ma_slow else 0
-    
+    ma_fast = series.rolling(window=fast_window).mean().iloc[-1]
+    ma_slow = series.rolling(window=slow_window).mean().iloc[-1]
+    diff = float(ma_fast - ma_slow) if not (np.isnan(ma_fast) or np.isnan(ma_slow)) else np.nan
+    ratio = (float(ma_fast / ma_slow) if ma_slow != 0 else np.nan) if not (np.isnan(ma_fast) or np.isnan(ma_slow)) else np.nan
+    signal = (1 if (not np.isnan(ma_fast) and not np.isnan(ma_slow) and ma_fast > ma_slow) else 0)
     return {
-        'ma_cross_diff': diff,
-        'ma_cross_ratio': ratio, 
-        'ma_cross_signal': signal
+        f'{column_name}_ma_cross_diff_{fast_window}_{slow_window}': diff,
+        f'{column_name}_ma_cross_ratio_{fast_window}_{slow_window}': ratio,
+        f'{column_name}_ma_cross_signal_{fast_window}_{slow_window}': signal
     }
 
 
-def calculate_ma_distance(price: float, ma_value: float) -> Dict[str, float]:
-    """13. Distance to Moving Averages"""
+def calculate_ma_distance(current_value: float, ma_value: float, column_name: str = 'close', ma_label: str = 'ma') -> Dict[str, float]:
+    """13. Distance to Moving Averages
+
+    Apply on: close (or any series scalar)
+    Returns keys: '{col}_ma_distance_{label}', '{col}_ma_distance_pct_{label}'
+    """
+    dist_key = f"{column_name}_ma_distance_{ma_label}"
+    pct_key = f"{column_name}_ma_distance_pct_{ma_label}"
     if np.isnan(ma_value) or ma_value == 0:
-        return {'ma_distance': np.nan, 'ma_distance_pct': np.nan}
-    
-    distance = price - ma_value
-    distance_pct = (distance / ma_value) * 100
-    
-    return {'ma_distance': distance, 'ma_distance_pct': distance_pct}
+        return {dist_key: np.nan, pct_key: np.nan}
+    distance = float(current_value - ma_value)
+    distance_pct = float((distance / ma_value) * 100)
+    return {dist_key: distance, pct_key: distance_pct}
 
 
-def calculate_macd(data: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> Dict[str, float]:
-    """14. MACD: EMA_12 - EMA_26, Signal line, Histogram"""
-    if len(data) < max(fast, slow, signal):
+def calculate_macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9, column_name: str = 'close') -> Dict[str, float]:
+    """14. MACD: EMA_12 - EMA_26, Signal line, Histogram
+
+    Apply on: close
+    Keys: '{col}_macd_line_{fast}_{slow}', '{col}_macd_signal_{signal}', '{col}_macd_histogram_{fast}_{slow}_{signal}'
+    """
+    if len(series) < max(fast, slow, signal):
         return {
-            'macd_line': np.nan,
-            'macd_signal': np.nan,
-            'macd_histogram': np.nan
+            f'{column_name}_macd_line_{fast}_{slow}': np.nan,
+            f'{column_name}_macd_signal_{signal}': np.nan,
+            f'{column_name}_macd_histogram_{fast}_{slow}_{signal}': np.nan
         }
-    
-    ema_fast = data.ewm(span=fast).mean()
-    ema_slow = data.ewm(span=slow).mean()
-    macd_line = (ema_fast - ema_slow).iloc[-1]
-    
+    ema_fast = series.ewm(span=fast).mean()
+    ema_slow = series.ewm(span=slow).mean()
+    macd_line = float((ema_fast - ema_slow).iloc[-1])
     macd_series = ema_fast - ema_slow
     if len(macd_series) >= signal:
-        macd_signal = macd_series.ewm(span=signal).mean().iloc[-1]
-        macd_histogram = macd_line - macd_signal
+        macd_signal = float(macd_series.ewm(span=signal).mean().iloc[-1])
+        macd_histogram = float(macd_line - macd_signal)
     else:
         macd_signal = np.nan
         macd_histogram = np.nan
-    
     return {
-        'macd_line': macd_line,
-        'macd_signal': macd_signal,
-        'macd_histogram': macd_histogram
+        f'{column_name}_macd_line_{fast}_{slow}': macd_line,
+        f'{column_name}_macd_signal_{signal}': macd_signal,
+        f'{column_name}_macd_histogram_{fast}_{slow}_{signal}': macd_histogram
     }
 
 
-def calculate_volume_ma(volume: pd.Series, window: int) -> float:
-    """15. Moving Average of Volume"""
-    return calculate_sma(volume, window)
+def calculate_volume_ma(volume: pd.Series, window: int, column_name: str = 'volume') -> Dict[str, float]:
+    """15. Moving Average of Volume
+
+    Apply on: volume (SMA)
+    Returns: { 'volume_sma_{window}': value }
+    """
+    return calculate_sma(volume, window, column_name)
 
 
 # =============================================================================
 # MOMENTUM AND OSCILLATOR FEATURES (Features 16-22)
 # =============================================================================
 
-def calculate_rsi(data: pd.Series, window: int = 14) -> float:
-    """16. Relative Strength Index"""
-    if len(data) < window + 1:
-        return np.nan
-    
-    delta = data.diff().dropna()
-    if len(delta) < window:
-        return np.nan
-    
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    
-    avg_gain = gain.rolling(window=window).mean().iloc[-1]
-    avg_loss = loss.rolling(window=window).mean().iloc[-1]
-    
-    if avg_loss == 0:
-        return 100.0
-    
-    rs = avg_gain / avg_loss
+def calculate_rsi(series: pd.Series, window: int = 14, column_name: str = 'close') -> Dict[str, float]:
+    """16. Relative Strength Index (Wilder's RSI)
+
+    Apply on: close
+    Returns: { '{column_name}_rsi_{window}': value }
+    """
+    key = f"{column_name}_rsi_{window}"
+    if len(series) < window + 1:
+        return {key: np.nan}
+
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+
+    avg_gain_series = gain.ewm(alpha=1 / window, adjust=False, min_periods=window).mean()
+    avg_loss_series = loss.ewm(alpha=1 / window, adjust=False, min_periods=window).mean()
+
+    last_avg_gain = avg_gain_series.iloc[-1]
+    last_avg_loss = avg_loss_series.iloc[-1]
+
+    if np.isnan(last_avg_gain) or np.isnan(last_avg_loss):
+        return {key: np.nan}
+
+    if last_avg_loss == 0:
+        return {key: 100.0}
+
+    rs = last_avg_gain / last_avg_loss
     rsi = 100 - (100 / (1 + rs))
-    return rsi
+    return {key: float(rsi)}
 
 
 def calculate_stochastic(high: pd.Series, low: pd.Series, close: pd.Series, 
-                        k_window: int = 14, d_window: int = 3) -> Dict[str, float]:
-    """17. Stochastic Oscillator: %K and %D"""
+                        k_window: int = 14, d_window: int = 3, column_name: str = 'close') -> Dict[str, float]:
+    """17. Stochastic Oscillator: %K and %D
+
+    Apply on: high, low, close
+    Returns: { '{col}_stoch_k_{k}', '{col}_stoch_d_{k}_{d}' }
+    """
     if len(close) < k_window:
-        return {'stoch_k': np.nan, 'stoch_d': np.nan}
+        return {f'{column_name}_stoch_k_{k_window}': np.nan, f'{column_name}_stoch_d_{k_window}_{d_window}': np.nan}
     
     lowest_low = low.rolling(window=k_window).min().iloc[-1]
     highest_high = high.rolling(window=k_window).max().iloc[-1]
@@ -346,13 +381,17 @@ def calculate_stochastic(high: pd.Series, low: pd.Series, close: pd.Series,
     else:
         d_percent = np.nan
     
-    return {'stoch_k': k_percent, 'stoch_d': d_percent}
+    return {f'{column_name}_stoch_k_{k_window}': float(k_percent), f'{column_name}_stoch_d_{k_window}_{d_window}': float(d_percent) if not np.isnan(d_percent) else np.nan}
 
 
-def calculate_cci(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 20) -> float:
-    """18. Commodity Channel Index"""
+def calculate_cci(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 20, column_name: str = 'close') -> Dict[str, float]:
+    """18. Commodity Channel Index
+
+    Apply on: high, low, close
+    Returns: { '{col}_cci_{window}': value }
+    """
     if len(close) < window:
-        return np.nan
+        return {f'{column_name}_cci_{window}': np.nan}
     
     typical_price = (high + low + close) / 3
     sma_tp = typical_price.rolling(window=window).mean().iloc[-1]
@@ -362,47 +401,56 @@ def calculate_cci(high: pd.Series, low: pd.Series, close: pd.Series, window: int
     mean_deviation = np.mean(np.abs(rolling_tp - rolling_tp.mean()))
     
     if mean_deviation == 0:
-        return np.nan
-    
+        return {f'{column_name}_cci_{window}': np.nan}
     cci = (typical_price.iloc[-1] - sma_tp) / (0.015 * mean_deviation)
-    return cci
+    return {f'{column_name}_cci_{window}': float(cci)}
 
 
-def calculate_roc(data: pd.Series, period: int) -> float:
-    """19. Rate of Change"""
-    if len(data) <= period:
-        return np.nan
-    
-    current = data.iloc[-1]
-    past = data.iloc[-1-period]
-    
+def calculate_roc(series: pd.Series, period: int, column_name: str = 'close') -> Dict[str, float]:
+    """19. Rate of Change
+
+    Apply on: close or volume
+    Returns: { '{col}_roc_{period}': value }
+    """
+    key = f"{column_name}_roc_{period}"
+    if len(series) <= period:
+        return {key: np.nan}
+    current = series.iloc[-1]
+    past = series.iloc[-1-period]
     if past == 0:
-        return np.nan
-    
-    return ((current - past) / past) * 100
+        return {key: np.nan}
+    return {key: float(((current - past) / past) * 100)}
 
 
-def calculate_williams_r(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> float:
-    """20. Williams %R"""
+def calculate_williams_r(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14, column_name: str = 'close') -> Dict[str, float]:
+    """20. Williams %R
+
+    Apply on: high, low, close
+    Returns: { '{col}_williams_r_{window}': value }
+    """
     if len(close) < window:
-        return np.nan
+        return {f'{column_name}_williams_r_{window}': np.nan}
     
     highest_high = high.rolling(window=window).max().iloc[-1]
     lowest_low = low.rolling(window=window).min().iloc[-1]
     
     if highest_high == lowest_low:
-        return -50.0
-    
+        return {f'{column_name}_williams_r_{window}': -50.0}
     williams_r = -100 * (highest_high - close.iloc[-1]) / (highest_high - lowest_low)
-    return williams_r
+    return {f'{column_name}_williams_r_{window}': float(williams_r)}
 
 
 def calculate_ultimate_oscillator(high: pd.Series, low: pd.Series, close: pd.Series,
                                 periods: List[int] = [7, 14, 28], 
-                                weights: List[float] = [4, 2, 1]) -> float:
-    """21. Ultimate Oscillator"""
+                                weights: List[float] = [4, 2, 1],
+                                column_name: str = 'close') -> Dict[str, float]:
+    """21. Ultimate Oscillator
+
+    Apply on: high, low, close
+    Returns: { '{col}_uo_{p1}_{p2}_{p3}': value }
+    """
     if len(close) < max(periods):
-        return np.nan
+        return {f'{column_name}_uo_{"_".join(map(str, periods))}': np.nan}
     
     def buying_pressure(h, l, c):
         return c - np.minimum(l, c.shift(1))
@@ -419,17 +467,21 @@ def calculate_ultimate_oscillator(high: pd.Series, low: pd.Series, close: pd.Ser
             avg = bp.rolling(window=period).sum().iloc[-1] / tr.rolling(window=period).sum().iloc[-1]
             averages.append(avg * weights[i])
         else:
-            return np.nan
-    
+            return {f'{column_name}_uo_{"_".join(map(str, periods))}': np.nan}
     uo = 100 * sum(averages) / sum(weights)
-    return uo
+    return {f'{column_name}_uo_{"_".join(map(str, periods))}': float(uo)}
 
 
 def calculate_mfi(high: pd.Series, low: pd.Series, close: pd.Series, 
-                 volume: pd.Series, window: int = 14) -> float:
-    """22. Money Flow Index"""
+                 volume: pd.Series, window: int = 14, column_name: str = 'close') -> Dict[str, float]:
+    """22. Money Flow Index
+
+    Apply on: high, low, close, volume
+    Returns: { '{col}_mfi_{window}': value }
+    """
+    key = f"{column_name}_mfi_{window}"
     if len(close) < window + 1:
-        return np.nan
+        return {key: np.nan}
     
     typical_price = (high + low + close) / 3
     money_flow = typical_price * volume
@@ -442,33 +494,41 @@ def calculate_mfi(high: pd.Series, low: pd.Series, close: pd.Series,
     negative_mf = negative_flow.rolling(window=window).sum().iloc[-1]
     
     if negative_mf == 0:
-        return 100.0
-    
+        return {key: 100.0}
     mfr = positive_mf / negative_mf
     mfi = 100 - (100 / (1 + mfr))
-    return mfi
+    return {key: float(mfi)}
 
 
 # =============================================================================
 # VOLATILITY FEATURES (Features 23-28)
 # =============================================================================
 
-def calculate_historical_volatility(data: pd.Series, window: int = 20) -> float:
-    """23. Historical Volatility: std of log returns"""
-    if len(data) < window + 1:
-        return np.nan
-    
-    returns = np.log(data / data.shift(1)).dropna()
+def calculate_historical_volatility(series: pd.Series, window: int = 20, column_name: str = 'close') -> Dict[str, float]:
+    """23. Historical Volatility: std of log returns (annualized)
+
+    Apply on: close
+    Returns: { '{col}_hv_{window}': value }
+    """
+    key = f"{column_name}_hv_{window}"
+    if len(series) < window + 1:
+        return {key: np.nan}
+    returns = np.log(series / series.shift(1)).dropna()
     if len(returns) < window:
-        return np.nan
-    
-    return returns.tail(window).std() * np.sqrt(252)  # Annualized
+        return {key: np.nan}
+    value = float(returns.tail(window).std() * np.sqrt(365))
+    return {key: value}
 
 
-def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> float:
-    """24. Average True Range"""
+def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14, column_name: str = 'close') -> Dict[str, float]:
+    """24. Average True Range
+
+    Apply on: high, low, close
+    Returns: { '{col}_atr_{window}': value }
+    """
+    key = f"{column_name}_atr_{window}"
     if len(close) < window + 1:
-        return np.nan
+        return {key: np.nan}
     
     tr_list = []
     for i in range(1, len(close)):
@@ -480,88 +540,92 @@ def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, window: int
         tr_list.append(tr)
     
     if len(tr_list) < window:
-        return np.nan
-    
-    return np.mean(tr_list[-window:])
+        return {key: np.nan}
+    value = float(np.mean(tr_list[-window:]))
+    return {key: value}
 
 
-def calculate_bollinger_bands(data: pd.Series, window: int = 20, num_std: float = 2.0) -> Dict[str, float]:
-    """25. Bollinger Bands: Upper, Lower, Width, %B"""
-    if len(data) < window:
-        return {
-            'bb_upper': np.nan, 'bb_middle': np.nan, 'bb_lower': np.nan,
-            'bb_width': np.nan, 'bb_percent': np.nan
-        }
-    
-    rolling_data = data.tail(window)
+def calculate_bollinger_bands(series: pd.Series, window: int = 20, num_std: float = 2.0, column_name: str = 'close') -> Dict[str, float]:
+    """25. Bollinger Bands: Upper, Lower, Width, %B
+
+    Apply on: close
+    Returns: keys prefixed with column and window/num_std
+    """
+    def fmt_std(x: float) -> str:
+        return str(int(x)) if float(x).is_integer() else str(x).replace('.', '_')
+    std_tag = fmt_std(num_std)
+    keys = {
+        'upper': f'{column_name}_bb_upper_{window}_{std_tag}',
+        'middle': f'{column_name}_bb_middle_{window}',
+        'lower': f'{column_name}_bb_lower_{window}_{std_tag}',
+        'width': f'{column_name}_bb_width_{window}_{std_tag}',
+        'percent': f'{column_name}_bb_percent_{window}_{std_tag}',
+    }
+    if len(series) < window:
+        return {keys['upper']: np.nan, keys['middle']: np.nan, keys['lower']: np.nan, keys['width']: np.nan, keys['percent']: np.nan}
+    rolling_data = series.tail(window)
     middle = rolling_data.mean()
     std = rolling_data.std()
-    
     upper = middle + (num_std * std)
     lower = middle - (num_std * std)
     width = upper - lower
-    
-    current_price = data.iloc[-1]
-    if width == 0:
-        bb_percent = 0.5
-    else:
-        bb_percent = (current_price - lower) / width
-    
-    return {
-        'bb_upper': upper, 'bb_middle': middle, 'bb_lower': lower,
-        'bb_width': width, 'bb_percent': bb_percent
-    }
+    current_price = series.iloc[-1]
+    bb_percent = 0.5 if width == 0 else (current_price - lower) / width
+    return {keys['upper']: float(upper), keys['middle']: float(middle), keys['lower']: float(lower), keys['width']: float(width), keys['percent']: float(bb_percent)}
 
 
-def calculate_volatility_ratio(data: pd.Series, short_window: int = 5, long_window: int = 50) -> float:
-    """26. Volatility Ratios: short-term vol / long-term vol"""
-    if len(data) < long_window + 1:
-        return np.nan
-    
-    returns = np.log(data / data.shift(1)).dropna()
-    
+def calculate_volatility_ratio(series: pd.Series, short_window: int = 5, long_window: int = 50, column_name: str = 'close') -> Dict[str, float]:
+    """26. Volatility Ratios: short-term vol / long-term vol
+
+    Apply on: close
+    Returns: { '{col}_vol_ratio_{short}_{long}': value }
+    """
+    key = f"{column_name}_vol_ratio_{short_window}_{long_window}"
+    if len(series) < long_window + 1:
+        return {key: np.nan}
+    returns = np.log(series / series.shift(1)).dropna()
     if len(returns) < long_window:
-        return np.nan
-    
+        return {key: np.nan}
     short_vol = returns.tail(short_window).std()
     long_vol = returns.tail(long_window).std()
-    
     if long_vol == 0:
-        return np.nan
-    
-    return short_vol / long_vol
+        return {key: np.nan}
+    return {key: float(short_vol / long_vol)}
 
 
-def calculate_parkinson_volatility(high: pd.Series, low: pd.Series, window: int = 20) -> float:
-    """27. Parkinson Volatility: based on High-Low ranges"""
+def calculate_parkinson_volatility(high: pd.Series, low: pd.Series, window: int = 20, column_name: str = 'close') -> Dict[str, float]:
+    """27. Parkinson Volatility: based on High-Low ranges
+
+    Apply on: high, low
+    Returns: { '{col}_parkinson_{window}': value }
+    """
+    key = f"{column_name}_parkinson_{window}"
     if len(high) < window:
-        return np.nan
-    
+        return {key: np.nan}
     log_hl_ratio = np.log(high / low)
     parkinson_values = log_hl_ratio ** 2
-    
     if len(parkinson_values) < window:
-        return np.nan
-    
-    return np.sqrt((1 / (4 * np.log(2))) * parkinson_values.tail(window).mean())
+        return {key: np.nan}
+    value = float(np.sqrt((1 / (4 * np.log(2))) * parkinson_values.tail(window).mean()))
+    return {key: value}
 
 
-def calculate_garman_klass_volatility(ohlc: pd.DataFrame, window: int = 20) -> float:
-    """28. Garman-Klass Volatility: incorporates OHLC"""
-    if len(ohlc) < window:
-        return np.nan
-    
-    high, low, open_, close = ohlc['high'], ohlc['low'], ohlc['open'], ohlc['close']
-    
+def calculate_garman_klass_volatility(high: pd.Series, low: pd.Series, open_s: pd.Series, close: pd.Series, window: int = 20, column_name: str = 'close') -> Dict[str, float]:
+    """28. Garman-Klass Volatility: incorporates OHLC
+
+    Apply on: high, low, open, close
+    Returns: { '{col}_gk_{window}': value }
+    """
+    key = f"{column_name}_gk_{window}"
+    if len(close) < window:
+        return {key: np.nan}
     term1 = 0.5 * (np.log(high / low)) ** 2
-    term2 = (2 * np.log(2) - 1) * (np.log(close / open_)) ** 2
-    
+    term2 = (2 * np.log(2) - 1) * (np.log(close / open_s)) ** 2
     gk_values = term1 - term2
-    
     if len(gk_values) < window:
-        return np.nan
-    
-    return np.sqrt(gk_values.tail(window).mean())
+        return {key: np.nan}
+    value = float(np.sqrt(gk_values.tail(window).mean()))
+    return {key: value}
 
 
 # =============================================================================
