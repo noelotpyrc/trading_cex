@@ -20,19 +20,19 @@ warnings.filterwarnings('ignore')
 # BASIC TRANSFORMATIONS AND LAGS (Features 1-8)
 # =============================================================================
 
-def calculate_lagged_prices(data: pd.Series, lags: List[int]) -> Dict[str, float]:
-    """1. Lagged Prices: Close_{t-1}, Close_{t-5}, Close_{t-20}"""
+def get_lags(data: pd.Series, lags: List[int], column_name: str = "close") -> Dict[str, float]:
+    """1. Generic Lags: Get lagged values for any column with configurable naming"""
     result = {}
     for lag in lags:
         if len(data) > lag:
-            result[f'lag_{lag}'] = data.iloc[-1-lag]
+            result[f'{column_name}_lag_{lag}'] = data.iloc[-1-lag]
         else:
-            result[f'lag_{lag}'] = np.nan
+            result[f'{column_name}_lag_{lag}'] = np.nan
     return result
 
 
-def calculate_price_differences(ohlcv: pd.DataFrame) -> Dict[str, float]:
-    """2. Price Differences: Close-Open, High-Low, Close-Close_{t-1}"""
+def calculate_price_differences(ohlcv: pd.DataFrame, lag: int = 0) -> Dict[str, float]:
+    """2. Price Differences: Calculate price differences for a specific lag in OHLCV data"""
     if len(ohlcv) == 0:
         return {}
     
@@ -42,33 +42,55 @@ def calculate_price_differences(ohlcv: pd.DataFrame) -> Dict[str, float]:
         return {
             'close_open_diff': np.nan,
             'high_low_range': np.nan,
-            'close_change': np.nan
+            'price_change': np.nan
         }
     
-    current = ohlcv.iloc[-1]
+    # Calculate the actual row index based on lag
+    # lag 0 = current row (last), lag 1 = previous row, lag 2 = two back, etc.
+    row_idx = -1 - lag
+    
+    # Check if the row exists
+    if abs(row_idx) > len(ohlcv):
+        return {
+            'close_open_diff': np.nan,
+            'high_low_range': np.nan,
+            'price_change': np.nan
+        }
+    
+    current_row = ohlcv.iloc[row_idx]
+    
+    # Create column names with lag terminology
+    if lag == 0:
+        row_suffix = "_current"
+    else:
+        row_suffix = f"_lag_{lag}"
+    
     result = {
-        'close_open_diff': current['close'] - current['open'],
-        'high_low_range': current['high'] - current['low']
+        f'close_open_diff{row_suffix}': current_row['close'] - current_row['open'],
+        f'high_low_range{row_suffix}': current_row['high'] - current_row['low']
     }
     
-    if len(ohlcv) > 1:
-        prev_close = ohlcv['close'].iloc[-2]
-        result['close_change'] = current['close'] - prev_close
+    # Calculate close change for the specific row we're analyzing
+    # Check if this row has a previous row to calculate close - close_previous
+    # Since row_idx is always negative, we check if row_idx - 1 is within bounds
+    if abs(row_idx - 1) <= len(ohlcv):
+        prev_row = ohlcv.iloc[row_idx - 1]  # Move backward one row (e.g., -2 - 1 = -3)
+        result[f'close_change{row_suffix}'] = current_row['close'] - prev_row['close']
     else:
-        result['close_change'] = np.nan
+        result[f'close_change{row_suffix}'] = np.nan
     
     return result
 
 
-def calculate_log_transforms(ohlcv: pd.DataFrame) -> Dict[str, float]:
-    """3. Log Transformations: log(Open), log(High), log(Low), log(Close), log(Volume)"""
+def calculate_log_transforms(ohlcv: pd.DataFrame, columns: List[str] = ['open', 'high', 'low', 'close', 'volume']) -> Dict[str, float]:
+    """3. Log Transformations: log(columns) for specified columns"""
     if len(ohlcv) == 0:
         return {}
     
     current = ohlcv.iloc[-1]
     result = {}
     
-    for col in ['open', 'high', 'low', 'close', 'volume']:
+    for col in columns:
         if col in ohlcv.columns and current[col] > 0:
             result[f'log_{col}'] = np.log(current[col])
         else:
@@ -77,19 +99,37 @@ def calculate_log_transforms(ohlcv: pd.DataFrame) -> Dict[str, float]:
     return result
 
 
-def calculate_percentage_changes(data: pd.Series, periods: List[int]) -> Dict[str, float]:
-    """4. Percentage Changes: (Close - Close_{t-n}) / Close_{t-n} * 100"""
-    result = {}
-    for period in periods:
-        if len(data) > period:
-            current = data.iloc[-1]
-            past = data.iloc[-1-period]
-            if past != 0:
-                result[f'pct_change_{period}'] = (current - past) / past * 100
-            else:
-                result[f'pct_change_{period}'] = np.nan
+def calculate_percentage_changes(data: pd.Series, lag: int = 0, column_name: str = "close") -> Dict[str, float]:
+    """4. Percentage Changes: (Close - Close_{t-1}) / Close_{t-1} * 100 for a specific lag"""
+    if len(data) == 0:
+        return {}
+    
+    # Calculate the actual row index based on lag
+    # lag 0 = current row (last), lag 1 = previous row, lag 2 = two back, etc.
+    row_idx = -1 - lag
+    
+    # Check if the row exists
+    if abs(row_idx) > len(data):
+        return {f'{column_name}_pct_change': np.nan}
+    
+    current_price = data.iloc[row_idx]
+    
+    # Create column names with lag terminology
+    if lag == 0:
+        row_suffix = "_current"
+    else:
+        row_suffix = f"_lag_{lag}"
+    
+    # Calculate percentage change from current row to previous row (lag 1)
+    if abs(row_idx - 1) <= len(data):
+        prev_price = data.iloc[row_idx - 1]  # Move backward one row
+        if prev_price != 0:
+            result = {f'{column_name}_pct_change{row_suffix}': (current_price - prev_price) / prev_price * 100}
         else:
-            result[f'pct_change_{period}'] = np.nan
+            result = {f'{column_name}_pct_change{row_suffix}': np.nan}
+    else:
+        result = {f'{column_name}_pct_change{row_suffix}': np.nan}
+    
     return result
 
 
@@ -132,25 +172,21 @@ def calculate_volume_lags_and_changes(volume: pd.Series, lags: List[int]) -> Dic
     """7-8. Volume Lags and Changes"""
     result = {}
     
-    # Volume lags
-    for lag in lags:
-        if len(volume) > lag:
-            result[f'volume_lag_{lag}'] = volume.iloc[-1-lag]
-        else:
-            result[f'volume_lag_{lag}'] = np.nan
+    # Get volume lags using the generic function
+    volume_lags = get_lags(volume, lags, "volume")
+    result.update(volume_lags)
     
     # Volume changes
     if len(volume) > 1:
         current_vol = volume.iloc[-1]
         prev_vol = volume.iloc[-2]
         result['volume_change'] = current_vol - prev_vol
-        if prev_vol != 0:
-            result['volume_pct_change'] = (current_vol - prev_vol) / prev_vol * 100
-        else:
-            result['volume_pct_change'] = np.nan
     else:
         result['volume_change'] = np.nan
-        result['volume_pct_change'] = np.nan
+    
+    # Get volume percentage changes using the generic function
+    volume_pct_changes = calculate_percentage_changes(volume, 0, "volume")
+    result.update(volume_pct_changes)
     
     return result
 
