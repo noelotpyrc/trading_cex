@@ -632,267 +632,321 @@ def calculate_garman_klass_volatility(high: pd.Series, low: pd.Series, open_s: p
 # VOLUME-INTEGRATED FEATURES (Features 29-33)
 # =============================================================================
 
-def calculate_obv(close: pd.Series, volume: pd.Series) -> float:
-    """29. On-Balance Volume"""
+def calculate_obv(close: pd.Series, volume: pd.Series, column_name: str = 'close') -> Dict[str, float]:
+    """29. On-Balance Volume
+
+    Apply on: close, volume
+    Returns: { '{col}_obv': value }
+    """
+    key = f"{column_name}_obv"
     if len(close) < 2:
-        return np.nan
-    
-    obv = 0
+        return {key: np.nan}
+
+    obv_value = 0.0
     for i in range(1, len(close)):
-        if close.iloc[i] > close.iloc[i-1]:
-            obv += volume.iloc[i]
-        elif close.iloc[i] < close.iloc[i-1]:
-            obv -= volume.iloc[i]
-    
-    return obv
+        if close.iloc[i] > close.iloc[i - 1]:
+            obv_value += float(volume.iloc[i])
+        elif close.iloc[i] < close.iloc[i - 1]:
+            obv_value -= float(volume.iloc[i])
+
+    return {key: obv_value}
 
 
-def calculate_vwap(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -> float:
-    """30. Volume Weighted Average Price"""
+def calculate_vwap(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series, column_name: str = 'close') -> Dict[str, float]:
+    """30. Volume Weighted Average Price
+
+    Apply on: high, low, close, volume
+    Returns: { '{col}_vwap': value }
+    """
+    key = f"{column_name}_vwap"
     if len(close) == 0:
-        return np.nan
-    
+        return {key: np.nan}
+
     typical_price = (high + low + close) / 3
-    total_volume_price = (typical_price * volume).sum()
-    total_volume = volume.sum()
-    
+    total_volume_price = float((typical_price * volume).sum())
+    total_volume = float(volume.sum())
+
     if total_volume == 0:
-        return np.nan
-    
-    return total_volume_price / total_volume
+        return {key: np.nan}
+
+    return {key: total_volume_price / total_volume}
 
 
-def calculate_adl(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -> float:
-    """31. Accumulation/Distribution Line"""
+def calculate_adl(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series, column_name: str = 'close') -> Dict[str, float]:
+    """31. Accumulation/Distribution Line
+
+    Apply on: high, low, close, volume
+    Returns: { '{col}_adl': value }
+    """
+    key = f"{column_name}_adl"
     if len(close) == 0:
-        return np.nan
-    
-    adl = 0
+        return {key: np.nan}
+
+    adl_value = 0.0
     for i in range(len(close)):
         if high.iloc[i] != low.iloc[i]:
             clv = ((close.iloc[i] - low.iloc[i]) - (high.iloc[i] - close.iloc[i])) / (high.iloc[i] - low.iloc[i])
-            adl += clv * volume.iloc[i]
-    
-    return adl
+            adl_value += float(clv * volume.iloc[i])
+
+    return {key: adl_value}
 
 
-def calculate_chaikin_oscillator(high: pd.Series, low: pd.Series, close: pd.Series, 
-                               volume: pd.Series, fast: int = 3, slow: int = 10) -> float:
-    """32. Chaikin Oscillator: EMA_3 - EMA_10 of ADL"""
+def calculate_chaikin_oscillator(high: pd.Series, low: pd.Series, close: pd.Series,
+                               volume: pd.Series, fast: int = 3, slow: int = 10, column_name: str = 'close') -> Dict[str, float]:
+    """32. Chaikin Oscillator: EMA_3 - EMA_10 of ADL
+
+    Apply on: high, low, close, volume
+    Returns: { '{col}_chaikin_{fast}_{slow}': value }
+    """
+    key = f"{column_name}_chaikin_{fast}_{slow}"
     if len(close) < max(fast, slow):
-        return np.nan
-    
+        return {key: np.nan}
+
     # Calculate ADL series
-    adl_series = []
-    adl_cumulative = 0
-    
+    adl_series: List[float] = []
+    adl_cumulative: float = 0.0
+
     for i in range(len(close)):
         if high.iloc[i] != low.iloc[i]:
             clv = ((close.iloc[i] - low.iloc[i]) - (high.iloc[i] - close.iloc[i])) / (high.iloc[i] - low.iloc[i])
-            adl_cumulative += clv * volume.iloc[i]
+            adl_cumulative += float(clv * volume.iloc[i])
         adl_series.append(adl_cumulative)
-    
+
     adl_pd = pd.Series(adl_series)
-    
+
     if len(adl_pd) < max(fast, slow):
-        return np.nan
-    
-    ema_fast = adl_pd.ewm(span=fast).mean().iloc[-1]
-    ema_slow = adl_pd.ewm(span=slow).mean().iloc[-1]
-    
-    return ema_fast - ema_slow
+        return {key: np.nan}
+
+    ema_fast = float(adl_pd.ewm(span=fast).mean().iloc[-1])
+    ema_slow = float(adl_pd.ewm(span=slow).mean().iloc[-1])
+
+    return {key: ema_fast - ema_slow}
 
 
-def calculate_volume_roc(volume: pd.Series, period: int) -> float:
-    """33. Volume Rate of Change"""
-    return calculate_roc(volume, period)
+def calculate_volume_roc(volume: pd.Series, period: int, column_name: str = 'volume') -> Dict[str, float]:
+    """33. Volume Rate of Change
+
+    Apply on: volume
+    Returns: { '{col}_roc_{period}': value }
+    """
+    return calculate_roc(volume, period, column_name)
 
 
 # =============================================================================
 # STATISTICAL AND DISTRIBUTIONAL FEATURES (Features 34-38)
 # =============================================================================
 
-def calculate_rolling_percentiles(data: pd.Series, window: int, 
-                                percentiles: List[float] = [25, 50, 75]) -> Dict[str, float]:
-    """34. Rolling Medians and Percentiles"""
+def calculate_rolling_percentiles(data: pd.Series, window: int,
+                                percentiles: List[float] = [25, 50, 75],
+                                column_name: str = 'close') -> Dict[str, float]:
+    """34. Rolling Medians and Percentiles
+
+    Apply on: any numeric series
+    Returns keys like '{col}_percentile_{p}_{window}'
+    """
     if len(data) < window:
-        return {f'percentile_{p}': np.nan for p in percentiles}
-    
+        return {f'{column_name}_percentile_{p}_{window}': np.nan for p in percentiles}
+
     rolling_data = data.tail(window)
-    return {f'percentile_{p}': np.percentile(rolling_data, p) for p in percentiles}
+    return {f'{column_name}_percentile_{p}_{window}': float(np.percentile(rolling_data, p)) for p in percentiles}
 
 
-def calculate_distribution_features(data: pd.Series, window: int = 30) -> Dict[str, float]:
-    """35. Kurtosis and Skewness of returns"""
+def calculate_distribution_features(data: pd.Series, window: int = 30, column_name: str = 'close') -> Dict[str, float]:
+    """35. Kurtosis and Skewness of returns
+
+    Apply on: any price/volume series (uses returns)
+    Returns: '{col}_skew_{window}', '{col}_kurt_{window}'
+    """
+    skew_key = f'{column_name}_skew_{window}'
+    kurt_key = f'{column_name}_kurt_{window}'
     if len(data) < window + 1:
-        return {'skewness': np.nan, 'kurtosis': np.nan}
-    
+        return {skew_key: np.nan, kurt_key: np.nan}
+
     returns = data.pct_change().dropna()
     if len(returns) < window:
-        return {'skewness': np.nan, 'kurtosis': np.nan}
-    
+        return {skew_key: np.nan, kurt_key: np.nan}
+
     rolling_returns = returns.tail(window)
-    return {
-        'skewness': stats.skew(rolling_returns),
-        'kurtosis': stats.kurtosis(rolling_returns)
-    }
+    return {skew_key: float(stats.skew(rolling_returns)), kurt_key: float(stats.kurtosis(rolling_returns))}
 
 
-def calculate_autocorrelation(data: pd.Series, lag: int = 1, window: int = 30) -> float:
-    """36. Autocorrelation of returns"""
+def calculate_autocorrelation(data: pd.Series, lag: int = 1, window: int = 30, column_name: str = 'close') -> Dict[str, float]:
+    """36. Autocorrelation of returns
+
+    Apply on: any price/volume series (uses returns)
+    Returns: '{col}_autocorr_{lag}_{window}'
+    """
+    key = f'{column_name}_autocorr_{lag}_{window}'
     if len(data) < window + lag + 1:
-        return np.nan
-    
+        return {key: np.nan}
+
     returns = data.pct_change().dropna()
     if len(returns) < window + lag:
-        return np.nan
-    
+        return {key: np.nan}
+
     rolling_returns = returns.tail(window + lag)
-    return rolling_returns.autocorr(lag=lag)
+    return {key: float(rolling_returns.autocorr(lag=lag))}
 
 
-def calculate_hurst_exponent(data: pd.Series, window: int = 100) -> float:
-    """37. Hurst Exponent via rescaled range analysis"""
+def calculate_hurst_exponent(data: pd.Series, window: int = 100, column_name: str = 'close') -> Dict[str, float]:
+    """37. Hurst Exponent via rescaled range analysis
+
+    Apply on: any price series
+    Returns: '{col}_hurst_{window}'
+    """
+    key = f'{column_name}_hurst_{window}'
     if len(data) < window:
-        return np.nan
-    
+        return {key: np.nan}
+
     try:
         log_returns = np.log(data / data.shift(1)).dropna().tail(window)
         if len(log_returns) < 10:
-            return np.nan
-        
+            return {key: np.nan}
+
         lags = range(2, min(20, len(log_returns) // 2))
         rs_values = []
-        
+
         for lag in lags:
-            # Calculate R/S statistic
             Y = log_returns.values
             mean_Y = np.mean(Y)
-            
-            # Cumulative deviations
             Z = np.cumsum(Y - mean_Y)
-            R = np.max(Z) - np.min(Z)  # Range
-            S = np.std(Y)  # Standard deviation
-            
+            R = np.max(Z) - np.min(Z)
+            S = np.std(Y)
             if S > 0:
                 rs_values.append(R / S)
-        
+
         if len(rs_values) < 3:
-            return np.nan
-        
-        # Linear regression on log(lag) vs log(R/S)
+            return {key: np.nan}
+
         log_lags = np.log(list(lags[:len(rs_values)]))
         log_rs = np.log(rs_values)
-        
-        hurst = np.polyfit(log_lags, log_rs, 1)[0]
-        return hurst
-        
-    except:
-        return np.nan
+        hurst = float(np.polyfit(log_lags, log_rs, 1)[0])
+        return {key: hurst}
+
+    except Exception:
+        return {key: np.nan}
 
 
-def calculate_entropy(data: pd.Series, window: int = 20) -> float:
-    """38. Approximate entropy of price series"""
+def calculate_entropy(data: pd.Series, window: int = 20, column_name: str = 'close') -> Dict[str, float]:
+    """38. Approximate entropy of price series
+
+    Apply on: any price series
+    Returns: '{col}_entropy_{window}'
+    """
+    key = f'{column_name}_entropy_{window}'
     if len(data) < window:
-        return np.nan
-    
+        return {key: np.nan}
+
     try:
         rolling_data = data.tail(window).values
-        
-        # Simple binning approach for entropy
         n_bins = min(10, len(rolling_data) // 2)
         hist, _ = np.histogram(rolling_data, bins=n_bins)
-        
-        # Normalize to probabilities
         hist = hist / np.sum(hist)
-        
-        # Calculate entropy
-        entropy = -np.sum(hist * np.log(hist + 1e-10))  # Add small value to avoid log(0)
-        return entropy
-        
-    except:
-        return np.nan
+        entropy = float(-np.sum(hist * np.log(hist + 1e-10)))
+        return {key: entropy}
+    except Exception:
+        return {key: np.nan}
 
 
 # =============================================================================
 # RATIO AND HYBRID FEATURES (Features 39-44)
 # =============================================================================
 
-def calculate_price_volume_ratios(ohlc: pd.DataFrame, volume: pd.Series) -> Dict[str, float]:
-    """39. Price-to-Volume Ratios"""
-    if len(ohlc) == 0 or volume.iloc[-1] == 0:
-        return {'close_volume_ratio': np.nan, 'high_volume_ratio': np.nan}
-    
-    current = ohlc.iloc[-1]
-    current_volume = volume.iloc[-1]
-    
-    return {
-        'close_volume_ratio': current['close'] / current_volume,
-        'high_volume_ratio': current['high'] / current_volume
+def calculate_price_volume_ratios(close: pd.Series,
+                                 high: pd.Series,
+                                 volume: pd.Series,
+                                 close_name: str = 'close',
+                                 high_name: str = 'high') -> Dict[str, float]:
+    """39. Price-to-Volume Ratios
+
+    Apply on: close, high, volume
+    Returns: { '{close_name}_volume_ratio', '{high_name}_volume_ratio' }
+    """
+    result = {}
+    if len(close) == 0 or len(high) == 0 or len(volume) == 0:
+        result[f'{close_name}_volume_ratio'] = np.nan
+        result[f'{high_name}_volume_ratio'] = np.nan
+        return result
+
+    current_volume = float(volume.iloc[-1])
+    if current_volume == 0 or np.isnan(current_volume):
+        result[f'{close_name}_volume_ratio'] = np.nan
+        result[f'{high_name}_volume_ratio'] = np.nan
+        return result
+
+    result[f'{close_name}_volume_ratio'] = float(close.iloc[-1]) / current_volume
+    result[f'{high_name}_volume_ratio'] = float(high.iloc[-1]) / current_volume
+    return result
+
+
+def calculate_candle_patterns(open_s: pd.Series, high: pd.Series, low: pd.Series, close: pd.Series,
+                              column_name: str = 'close') -> Dict[str, float]:
+    """40-41. Candle Body and Shadow Ratios
+
+    Apply on: open, high, low, close
+    Returns: { '{col}_candle_body_ratio', '{col}_candle_upper_shadow_ratio', '{col}_candle_lower_shadow_ratio' }
+    """
+    keys = {
+        'body': f'{column_name}_candle_body_ratio',
+        'upper': f'{column_name}_candle_upper_shadow_ratio',
+        'lower': f'{column_name}_candle_lower_shadow_ratio',
     }
+    if len(close) == 0:
+        return {keys['body']: np.nan, keys['upper']: np.nan, keys['lower']: np.nan}
 
-
-def calculate_candle_patterns(ohlc: pd.DataFrame) -> Dict[str, float]:
-    """40-41. Candle Body and Shadow Ratios"""
-    if len(ohlc) == 0:
-        return {
-            'body_ratio': np.nan, 'upper_shadow_ratio': np.nan, 
-            'lower_shadow_ratio': np.nan
-        }
-    
-    # Check required columns exist
-    required_cols = ['open', 'high', 'low', 'close']
-    if not all(col in ohlc.columns for col in required_cols):
-        return {
-            'body_ratio': np.nan, 'upper_shadow_ratio': np.nan, 
-            'lower_shadow_ratio': np.nan
-        }
-    
-    current = ohlc.iloc[-1]
-    o, h, l, c = current['open'], current['high'], current['low'], current['close']
+    o = float(open_s.iloc[-1])
+    h = float(high.iloc[-1])
+    l = float(low.iloc[-1])
+    c = float(close.iloc[-1])
     
     range_val = h - l
     if range_val == 0:
-        return {
-            'body_ratio': np.nan, 'upper_shadow_ratio': np.nan, 
-            'lower_shadow_ratio': np.nan
-        }
-    
+        return {keys['body']: np.nan, keys['upper']: np.nan, keys['lower']: np.nan}
+
     body_ratio = abs(c - o) / range_val
     upper_shadow_ratio = (h - max(o, c)) / range_val
     lower_shadow_ratio = (min(o, c) - l) / range_val
-    
-    return {
-        'body_ratio': body_ratio,
-        'upper_shadow_ratio': upper_shadow_ratio,
-        'lower_shadow_ratio': lower_shadow_ratio
-    }
+
+    return {keys['body']: body_ratio, keys['upper']: upper_shadow_ratio, keys['lower']: lower_shadow_ratio}
 
 
-def calculate_typical_price(high: pd.Series, low: pd.Series, close: pd.Series) -> float:
-    """42. Typical Price: (High + Low + Close) / 3"""
+def calculate_typical_price(high: pd.Series, low: pd.Series, close: pd.Series, column_name: str = 'close') -> Dict[str, float]:
+    """42. Typical Price: (High + Low + Close) / 3
+
+    Apply on: high, low, close
+    Returns: { '{col}_typical_price': value }
+    """
+    key = f'{column_name}_typical_price'
     if len(close) == 0:
-        return np.nan
-    
-    return (high.iloc[-1] + low.iloc[-1] + close.iloc[-1]) / 3
+        return {key: np.nan}
+    return {key: float((high.iloc[-1] + low.iloc[-1] + close.iloc[-1]) / 3)}
 
 
-def calculate_ohlc_average(ohlc: pd.DataFrame) -> float:
-    """43. OHLC Average: (Open + High + Low + Close) / 4"""
-    if len(ohlc) == 0:
-        return np.nan
-    
-    current = ohlc.iloc[-1]
-    return (current['open'] + current['high'] + current['low'] + current['close']) / 4
+def calculate_ohlc_average(open_s: pd.Series, high: pd.Series, low: pd.Series, close: pd.Series,
+                           column_name: str = 'close') -> Dict[str, float]:
+    """43. OHLC Average: (Open + High + Low + Close) / 4
+
+    Apply on: open, high, low, close
+    Returns: { '{col}_ohlc_average': value }
+    """
+    key = f'{column_name}_ohlc_average'
+    if len(close) == 0:
+        return {key: np.nan}
+    value = float((open_s.iloc[-1] + high.iloc[-1] + low.iloc[-1] + close.iloc[-1]) / 4)
+    return {key: value}
 
 
-def calculate_volatility_adjusted_returns(data: pd.Series, atr_value: float) -> float:
-    """44. Volatility-Adjusted Returns: log_return / sqrt(ATR)"""
+def calculate_volatility_adjusted_returns(data: pd.Series, atr_value: float, column_name: str = 'close', atr_label: str = 'atr') -> Dict[str, float]:
+    """44. Volatility-Adjusted Returns: log_return / sqrt(ATR)
+
+    Apply on: close (or any price series), with external ATR measure
+    Returns: { '{col}_vol_adj_return_{atr_label}': value }
+    """
+    key = f'{column_name}_vol_adj_return_{atr_label}'
     if len(data) < 2 or atr_value <= 0 or np.isnan(atr_value):
-        return np.nan
-    
+        return {key: np.nan}
     log_return = np.log(data.iloc[-1] / data.iloc[-2])
-    return log_return / np.sqrt(atr_value)
+    return {key: float(log_return / np.sqrt(atr_value))}
 
 
 # =============================================================================
@@ -900,69 +954,72 @@ def calculate_volatility_adjusted_returns(data: pd.Series, atr_value: float) -> 
 # =============================================================================
 
 def calculate_time_features(timestamp: pd.Timestamp) -> Dict[str, float]:
-    """45. Time of Day/Week features"""
+    """45. Time of Day/Week features
+
+    Apply on: timestamp
+    Returns: { 'time_hour_of_day', 'time_day_of_week', 'time_day_of_month', 'time_month_of_year' }
+    """
     return {
-        'hour_of_day': timestamp.hour,
-        'day_of_week': timestamp.dayofweek,
-        'day_of_month': timestamp.day,
-        'month_of_year': timestamp.month
+        'time_hour_of_day': timestamp.hour,
+        'time_day_of_week': timestamp.dayofweek,
+        'time_day_of_month': timestamp.day,
+        'time_month_of_year': timestamp.month
     }
 
 
-def calculate_rolling_extremes(data: pd.Series, window: int = 10) -> Dict[str, float]:
-    """46. Rolling Min/Max and position relative to range"""
+def calculate_rolling_extremes(data: pd.Series, window: int = 10, column_name: str = 'close') -> Dict[str, float]:
+    """46. Rolling Min/Max and position relative to range
+
+    Apply on: any price series
+    Returns keys with column and window, e.g., '{col}_rolling_min_{window}'
+    """
+    keys = {
+        'min': f'{column_name}_rolling_min_{window}',
+        'max': f'{column_name}_rolling_max_{window}',
+        'pos': f'{column_name}_position_in_range_{window}',
+    }
     if len(data) < window:
-        return {
-            'rolling_min': np.nan, 'rolling_max': np.nan,
-            'position_in_range': np.nan
-        }
-    
+        return {keys['min']: np.nan, keys['max']: np.nan, keys['pos']: np.nan}
+
     rolling_data = data.tail(window)
-    rolling_min = rolling_data.min()
-    rolling_max = rolling_data.max()
-    
-    current_price = data.iloc[-1]
-    
+    rolling_min = float(rolling_data.min())
+    rolling_max = float(rolling_data.max())
+    current_price = float(data.iloc[-1])
+
     if rolling_max == rolling_min:
         position_in_range = 0.5
     else:
         position_in_range = (current_price - rolling_min) / (rolling_max - rolling_min)
-    
-    return {
-        'rolling_min': rolling_min,
-        'rolling_max': rolling_max,
-        'position_in_range': position_in_range
+
+    return {keys['min']: rolling_min, keys['max']: rolling_max, keys['pos']: float(position_in_range)}
+
+
+def calculate_dominant_cycle(data: pd.Series, window: int = 50, column_name: str = 'close') -> Dict[str, float]:
+    """47. Simple Fourier-based dominant cycle detection
+
+    Apply on: any price series
+    Returns: '{col}_dominant_cycle_length_{window}', '{col}_cycle_strength_{window}'
+    """
+    keys = {
+        'len': f'{column_name}_dominant_cycle_length_{window}',
+        'strength': f'{column_name}_cycle_strength_{window}',
     }
-
-
-def calculate_dominant_cycle(data: pd.Series, window: int = 50) -> Dict[str, float]:
-    """47. Simple Fourier-based dominant cycle detection"""
     if len(data) < window:
-        return {'dominant_cycle_length': np.nan, 'cycle_strength': np.nan}
-    
+        return {keys['len']: np.nan, keys['strength']: np.nan}
+
     try:
         rolling_data = data.tail(window).values
-        
-        # Detrend the data
         detrended = rolling_data - np.mean(rolling_data)
-        
-        # Apply FFT
         fft_values = np.abs(fft(detrended))
-        
-        # Find dominant frequency (excluding DC component)
-        freqs = np.arange(1, len(fft_values) // 2)
         dominant_freq_idx = np.argmax(fft_values[1:len(fft_values)//2]) + 1
-        
-        # Convert to cycle length
+        if dominant_freq_idx == 0:
+            return {keys['len']: np.nan, keys['strength']: np.nan}
         dominant_cycle_length = len(rolling_data) / dominant_freq_idx
-        cycle_strength = fft_values[dominant_freq_idx] / np.sum(fft_values[1:len(fft_values)//2])
-        
-        return {
-            'dominant_cycle_length': dominant_cycle_length,
-            'cycle_strength': cycle_strength
-        }
-    except:
-        return {'dominant_cycle_length': np.nan, 'cycle_strength': np.nan}
+        denom = np.sum(fft_values[1:len(fft_values)//2])
+        cycle_strength = float(fft_values[dominant_freq_idx] / denom) if denom != 0 else np.nan
+        return {keys['len']: float(dominant_cycle_length), keys['strength']: cycle_strength}
+    except Exception:
+        return {keys['len']: np.nan, keys['strength']: np.nan}
 
 
 # =============================================================================
@@ -991,12 +1048,18 @@ def calculate_binary_thresholds(values: Dict[str, float],
     return result
 
 
-def calculate_rolling_correlation(series1: pd.Series, series2: pd.Series, window: int = 20) -> float:
-    """52. Rolling Correlation between Close and Volume"""
+def calculate_rolling_correlation(series1: pd.Series, series2: pd.Series, window: int = 20,
+                                  series1_name: str = 'close', series2_name: str = 'volume') -> Dict[str, float]:
+    """52. Rolling Correlation between two series
+
+    Apply on: any two aligned series
+    Returns: '{name1}_{name2}_rolling_corr_{window}'
+    """
+    key = f'{series1_name}_{series2_name}_rolling_corr_{window}'
     if len(series1) < window or len(series2) < window:
-        return np.nan
-    
-    return series1.tail(window).corr(series2.tail(window))
+        return {key: np.nan}
+    value = series1.tail(window).corr(series2.tail(window))
+    return {key: float(value)}
 
 
 def calculate_interaction_terms(features: Dict[str, float], 
@@ -1016,25 +1079,4 @@ def calculate_interaction_terms(features: Dict[str, float],
     
     return result
 
-
-# =============================================================================
-# UTILITY FUNCTIONS
-# =============================================================================
-
-def validate_ohlcv_data(data: pd.DataFrame) -> bool:
-    """Basic validation of OHLCV data"""
-    required_cols = ['open', 'high', 'low', 'close', 'volume']
-    if not all(col in data.columns for col in required_cols):
-        return False
-    
-    if len(data) == 0:
-        return False
-    
-    return True
-
-
-def safe_divide(numerator: float, denominator: float, default: float = np.nan) -> float:
-    """Safe division with default value for zero division"""
-    if denominator == 0 or np.isnan(denominator) or np.isnan(numerator):
-        return default
-    return numerator / denominator
+ 
