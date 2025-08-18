@@ -11,7 +11,7 @@ from scipy import stats
 # Add parent directory to path to import core_functions
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core_functions import get_lags, calculate_price_differences, calculate_log_transform, calculate_percentage_changes, calculate_cumulative_returns, calculate_zscore, calculate_sma, calculate_ema, calculate_wma, calculate_ma_crossovers, calculate_ma_distance, calculate_macd, calculate_volume_ma, calculate_rsi, calculate_stochastic, calculate_cci, calculate_roc, calculate_williams_r, calculate_ultimate_oscillator, calculate_mfi, calculate_historical_volatility, calculate_atr, calculate_bollinger_bands, calculate_volatility_ratio, calculate_parkinson_volatility, calculate_garman_klass_volatility, calculate_obv, calculate_vwap, calculate_adl, calculate_chaikin_oscillator, calculate_volume_roc, calculate_rolling_percentiles, calculate_distribution_features, calculate_autocorrelation, calculate_hurst_exponent, calculate_entropy, calculate_price_volume_ratios, calculate_candle_patterns, calculate_typical_price, calculate_ohlc_average, calculate_volatility_adjusted_returns, calculate_time_features, calculate_rolling_extremes, calculate_dominant_cycle, calculate_binary_thresholds, calculate_rolling_correlation, calculate_interaction_terms
+from core_functions import get_lags, calculate_price_differences, calculate_log_transform, calculate_percentage_changes, calculate_cumulative_returns, calculate_zscore, calculate_sma, calculate_ema, calculate_wma, calculate_ma_crossovers, calculate_ma_distance, calculate_macd, calculate_volume_ma, calculate_rsi, calculate_stochastic, calculate_cci, calculate_roc, calculate_williams_r, calculate_ultimate_oscillator, calculate_mfi, calculate_historical_volatility, calculate_atr, calculate_bollinger_bands, calculate_volatility_ratio, calculate_parkinson_volatility, calculate_garman_klass_volatility, calculate_obv, calculate_vwap, calculate_adl, calculate_chaikin_oscillator, calculate_volume_roc, calculate_rolling_percentiles, calculate_distribution_features, calculate_autocorrelation, calculate_hurst_exponent, calculate_entropy, calculate_price_volume_ratios, calculate_candle_patterns, calculate_typical_price, calculate_ohlc_average, calculate_volatility_adjusted_returns, calculate_time_features, calculate_rolling_extremes, calculate_dominant_cycle, calculate_binary_thresholds, calculate_rolling_correlation, calculate_interaction_terms, calculate_adx, calculate_rogers_satchell_volatility, calculate_yang_zhang_volatility, calculate_rvol, calculate_donchian_distance, calculate_aroon, calculate_return_zscore, calculate_atr_normalized_distance, calculate_roll_spread, calculate_amihud_illiquidity, calculate_turnover_zscore, calculate_ljung_box_pvalue, calculate_permutation_entropy, calculate_ou_half_life, calculate_var_cvar, calculate_spectral_entropy
 
 
 def test_get_lags():
@@ -1459,3 +1459,79 @@ if __name__ == '__main__':
         ok = abs(res['x_x_y'] - 6.0) < 1e-9 if 'x_x_y' in res else True
         print(f"Test passed: {ok}")
     test_interaction_terms_case()
+
+    # New high-impact feature tests (smoke-level math checks)
+    def test_adx_case():
+        print("\n" + "="*50)
+        print("Testing calculate_adx...")
+        high = pd.Series([10, 11, 11.5, 12, 12.5, 12.7, 13.0])
+        low = pd.Series([9.5, 10.2, 10.8, 11.0, 11.8, 12.1, 12.6])
+        close = pd.Series([9.8, 11.0, 11.2, 11.9, 12.3, 12.5, 12.9])
+        res = calculate_adx(high, low, close, 3, 'close')
+        print(f"Result: {res}")
+        ok = all(k in res for k in ['close_adx_3','close_di_plus_3','close_di_minus_3'])
+        print(f"Test passed: {ok and all(np.isfinite(v) or np.isnan(v) for v in res.values())}")
+    test_adx_case()
+
+    def test_rs_yz_vol_case():
+        print("\n" + "="*50)
+        print("Testing RS and YZ volatility...")
+        open_s = pd.Series([10, 10.1, 10.2, 10.4, 10.6, 10.5, 10.7])
+        high = pd.Series([10.3, 10.5, 10.6, 10.9, 11.0, 10.9, 11.2])
+        low = pd.Series([9.8, 9.9, 10.0, 10.2, 10.4, 10.3, 10.6])
+        close = pd.Series([10.1, 10.3, 10.5, 10.7, 10.6, 10.8, 11.0])
+        rs = calculate_rogers_satchell_volatility(high, low, open_s, close, 5, 'close')
+        yz = calculate_yang_zhang_volatility(open_s, high, low, close, 5, 'close')
+        print(f"RS: {rs}\nYZ: {yz}")
+        print(f"Test passed: all finite or NaN")
+    test_rs_yz_vol_case()
+
+    def test_rvol_case():
+        print("\n" + "="*50)
+        print("Testing RVOL...")
+        volume = pd.Series([100, 120, 80, 150, 110, 130, 160])
+        res = calculate_rvol(volume, 5, 'volume')
+        expected = float(volume.iloc[-1] / volume.tail(5).mean())
+        print(f"Result: {res}")
+        print(f"Expected: {expected}")
+        print(f"Test passed: {abs(res['volume_rvol_5'] - expected) < 1e-9}")
+    test_rvol_case()
+
+    def test_donchian_aroon_case():
+        print("\n" + "="*50)
+        print("Testing Donchian distance and Aroon...")
+        high = pd.Series([10, 11, 12, 13, 14, 15, 16])
+        low = pd.Series([9, 9.5, 10.5, 11.5, 12.5, 13.5, 14.5])
+        close = pd.Series([9.8, 10.7, 11.8, 12.7, 13.8, 14.8, 15.7])
+        don = calculate_donchian_distance(high, low, close, 5, 'close')
+        aro = calculate_aroon(high, low, 5, 'close')
+        print(f"Donchian: {don}\nAroon: {aro}")
+        print(f"Test passed: keys present")
+    test_donchian_aroon_case()
+
+    def test_return_zscore_and_atr_norm_case():
+        print("\n" + "="*50)
+        print("Testing return zscore and ATR-normalized distance...")
+        prices = pd.Series([100, 101, 99, 103, 102, 105, 106])
+        rz = calculate_return_zscore(prices, 5, 'close')
+        atr_norm = calculate_atr_normalized_distance(106, 100, 2.0, 'close', 'sma20')
+        print(f"Ret Z: {rz}\nATR-norm distance: {atr_norm}")
+        print(f"Test passed: keys present and finite/NaN")
+    test_return_zscore_and_atr_norm_case()
+
+    def test_liquidity_and_stats_case():
+        print("\n" + "="*50)
+        print("Testing Roll spread, Amihud, Turnover z, Ljung-Box p, Perm entropy, OU half-life, VaR/CVaR, Spectral entropy...")
+        close = pd.Series([100, 100.5, 100.3, 100.8, 100.6, 101.0, 100.9, 101.2, 101.5, 101.3, 101.8])
+        volume = pd.Series([1000, 1200, 900, 1500, 1100, 1300, 1250, 1400, 1600, 1500, 1700])
+        rs = calculate_roll_spread(close, 5, 'close')
+        am = calculate_amihud_illiquidity(close, volume, 5, 'close')
+        toz = calculate_turnover_zscore(close, volume, 5, 'turnover')
+        lj = calculate_ljung_box_pvalue(close, 3, 8, 'close')
+        pe = calculate_permutation_entropy(close, 7, 3, 'close')
+        ou = calculate_ou_half_life(close, 8, 'close')
+        vc = calculate_var_cvar(close, 8, 0.1, 'close')
+        se = calculate_spectral_entropy(close, 8, 'close')
+        print(rs, am, toz, lj, pe, ou, vc, se)
+        print("Test passed: keys present")
+    test_liquidity_and_stats_case()

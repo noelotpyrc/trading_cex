@@ -1,3 +1,10 @@
+### Implementation Notes (Unified API)
+All feature functions follow a unified style to simplify composition and downstream modeling:
+
+- Inputs use individual `pd.Series` (never whole `DataFrame`), with explicit `column_name` where relevant.
+- Outputs are `Dict[str, float]` with consistent, column-aware keys, e.g., `{col}_feature_{window}` or `{col}_lag_N`.
+- Rolling windows include the current bar and exclude future data; multi-timeframe features must be right-aligned to avoid leakage.
+
 ### Basic Transformations and Lags
 These involve direct manipulations of the OHLCV data to create time-shifted or normalized versions.
 
@@ -110,7 +117,7 @@ Combine elements for nuanced signals.
 ### Time-Based and Cyclical Features
 Incorporate temporal patterns, assuming data has timestamps.
 
-45. **Time of Day/Week Dummies**: If intraday OHLCV, binary features for hour/day to capture intra-period means (e.g., end-of-day reversion).
+45. **Time of Day/Week Encodings**: If intraday OHLCV, include hour-of-day, day-of-week, day-of-month, month-of-year (optionally one-hot/sin-cos) to capture intra-period effects (e.g., end-of-day reversion).
 
 46. **Rolling Window Statistics**: Min/Max Close over 10 days; ratio of current Close to that min/max for bounded deviation.
 
@@ -132,3 +139,37 @@ Build on others for complexity.
 These features can be computed using: 
 1. rolling windows of various lengths (e.g., 5, 10, 20, 50 periods) to create even more variations. 
 2. grouping windows of various timeframe (1h, 4h, 12h, 1d) to create even more variations.
+
+### Advanced Additions (Implemented)
+The core now includes several orthogonal features that complement classic TA and improve regime/context awareness for forward PnL prediction:
+
+- **Trend/Breakout**
+  - ADX / DMI: Trend strength and directional bias via Wilder smoothing; keys `{col}_adx_{w}`, `{col}_di_plus_{w}`, `{col}_di_minus_{w}`.
+  - Aroon Up/Down/Oscillator: Recency of highs/lows over a window; `{col}_aroon_up_{w}`, `{col}_aroon_down_{w}`, `{col}_aroon_osc_{w}`.
+  - Donchian Distance/Position: Price position within rolling high–low channel and normalized distances to edges; `{col}_donchian_pos_{w}`, `{col}_donchian_upper_dist_{w}`, `{col}_donchian_lower_dist_{w}`.
+
+- **Volatility (drift-robust estimators)**
+  - Rogers–Satchell Volatility: Intraday vol robust to drift using OHLC; `{col}_rs_{w}`.
+  - Yang–Zhang Volatility: Combines overnight, intraday, and RS components; `{col}_yz_{w}`.
+
+- **Volume & Liquidity**
+  - Relative Volume (RVOL): Current volume vs rolling mean; `{col}_rvol_{w}`.
+  - Amihud Illiquidity: Mean(|return| / dollar volume) over window; `{col}_amihud_{w}`.
+  - Roll Spread: Bid–ask spread proxy from negative autocovariance of price changes; `{col}_roll_spread_{w}`.
+  - Turnover Z-score: Z-score of `close*volume` over window; `turnover_z_{w}`.
+
+- **Standardization & Risk**
+  - Return Z-Score: Standardized latest log-return vs recent returns; `{col}_ret_zscore_{w}`.
+  - ATR-Normalized Distance: `(current − reference) / ATR` for vol-aware overextension; `{col}_dist_{label}_atr`.
+  - Historical VaR / CVaR: Quantile and tail mean of returns; `{col}_var_{pct}_{w}`, `{col}_cvar_{pct}_{w}`.
+
+- **Serial Dependence & Complexity**
+  - Ljung–Box p-value: Tests joint autocorrelation up to K lags on recent returns; `{col}_ljung_p_{lags}_{w}`.
+  - Permutation Entropy: Ordinal-pattern entropy (0–1) of recent prices; `{col}_perm_entropy_{m}_{w}`.
+  - Spectral Entropy: FFT power-spectrum entropy (0–1) of detrended recent prices; `{col}_spectral_entropy_{w}`.
+  - OU Half-Life: Mean reversion speed proxy from OU fit; `{col}_ou_halflife_{w}`.
+
+### Notes on Usage
+- Prefer a curated subset to reduce collinearity (e.g., choose 1–2 from each family).
+- Normalize features where appropriate (percent, z-scores, ATR-normalized) for regime robustness.
+- Keep label construction leakage-safe (forward windows shifted, no overlapping if needed) and include fees/slippage when modeling forward PnL.

@@ -1079,4 +1079,376 @@ def calculate_interaction_terms(features: Dict[str, float],
     
     return result
 
+
+# =============================================================================
+# ADDITIONAL HIGH-IMPACT FEATURES (Trend, Volatility, Volume, Breakout)
+# =============================================================================
+
+def calculate_adx(high: pd.Series, low: pd.Series, close: pd.Series,
+                  window: int = 14, column_name: str = 'close') -> Dict[str, float]:
+    """ADX/DMI (Wilder) trend strength and directional indicators
+
+    Apply on: high, low, close
+    Returns: '{col}_adx_{w}', '{col}_di_plus_{w}', '{col}_di_minus_{w}'
+    """
+    keys = {
+        'adx': f'{column_name}_adx_{window}',
+        'dip': f'{column_name}_di_plus_{window}',
+        'dim': f'{column_name}_di_minus_{window}',
+    }
+    if len(close) < window + 1:
+        return {keys['adx']: np.nan, keys['dip']: np.nan, keys['dim']: np.nan}
+
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+
+    tr1 = (high - low)
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    rma_tr = tr.ewm(alpha=1 / window, adjust=False, min_periods=window).mean()
+    rma_plus_dm = plus_dm.ewm(alpha=1 / window, adjust=False, min_periods=window).mean()
+    rma_minus_dm = minus_dm.ewm(alpha=1 / window, adjust=False, min_periods=window).mean()
+
+    di_plus = 100 * (rma_plus_dm / rma_tr)
+    di_minus = 100 * (rma_minus_dm / rma_tr)
+    dx = (100 * (di_plus - di_minus).abs() / (di_plus + di_minus)).replace([np.inf, -np.inf], np.nan)
+    adx_series = dx.ewm(alpha=1 / window, adjust=False, min_periods=window).mean()
+
+    return {
+        keys['adx']: float(adx_series.iloc[-1]) if not np.isnan(adx_series.iloc[-1]) else np.nan,
+        keys['dip']: float(di_plus.iloc[-1]) if not np.isnan(di_plus.iloc[-1]) else np.nan,
+        keys['dim']: float(di_minus.iloc[-1]) if not np.isnan(di_minus.iloc[-1]) else np.nan,
+    }
+
+
+def calculate_rogers_satchell_volatility(high: pd.Series, low: pd.Series, open_s: pd.Series, close: pd.Series,
+                                         window: int = 20, column_name: str = 'close') -> Dict[str, float]:
+    """Rogers–Satchell volatility estimator
+
+    Apply on: open, high, low, close
+    Returns: '{col}_rs_{window}'
+    """
+    key = f'{column_name}_rs_{window}'
+    if len(close) < window:
+        return {key: np.nan}
+    with np.errstate(divide='ignore', invalid='ignore'):
+        term = (np.log(high / close) * np.log(high / open_s) +
+                np.log(low / close) * np.log(low / open_s))
+    rs_var = term.tail(window).mean()
+    if np.isnan(rs_var) or rs_var < 0:
+        return {key: np.nan}
+    return {key: float(np.sqrt(rs_var))}
+
+
+def calculate_yang_zhang_volatility(open_s: pd.Series, high: pd.Series, low: pd.Series, close: pd.Series,
+                                    window: int = 20, column_name: str = 'close') -> Dict[str, float]:
+    """Yang–Zhang volatility estimator combining overnight, intraday, and RS components
+
+    Apply on: open, high, low, close
+    Returns: '{col}_yz_{window}'
+    """
+    key = f'{column_name}_yz_{window}'
+    if len(close) < window + 1:
+        return {key: np.nan}
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        r_o = np.log(open_s / close.shift(1))
+        r_c = np.log(close / open_s)
+        rs_term = (np.log(high / close) * np.log(high / open_s) +
+                   np.log(low / close) * np.log(low / open_s))
+
+    r_o_w = r_o.tail(window)
+    r_c_w = r_c.tail(window)
+    rs_w = rs_term.tail(window)
+    if len(r_o_w) < window or len(r_c_w) < window or len(rs_w) < window:
+        return {key: np.nan}
+
+    sigma_o2 = float(np.var(r_o_w, ddof=1))
+    sigma_c2 = float(np.var(r_c_w, ddof=1))
+    sigma_rs2 = float(rs_w.mean())
+
+    if window <= 1:
+        k = 0.34
+    else:
+        k = 0.34 / (1.34 + (window + 1) / (window - 1))
+    yz_var = sigma_o2 + k * sigma_c2 + (1 - k) * sigma_rs2
+    if yz_var < 0:
+        return {key: np.nan}
+    return {key: float(np.sqrt(yz_var))}
+
+
+def calculate_rvol(volume: pd.Series, window: int = 20, column_name: str = 'volume') -> Dict[str, float]:
+    """Relative Volume: current volume vs. rolling mean volume
+
+    Apply on: volume
+    Returns: '{col}_rvol_{window}'
+    """
+    key = f'{column_name}_rvol_{window}'
+    if len(volume) < window:
+        return {key: np.nan}
+    mean_vol = volume.tail(window).mean()
+    if mean_vol == 0 or np.isnan(mean_vol):
+        return {key: np.nan}
+    return {key: float(volume.iloc[-1] / mean_vol)}
+
+
+def calculate_donchian_distance(high: pd.Series, low: pd.Series, close: pd.Series,
+                                window: int = 20, column_name: str = 'close') -> Dict[str, float]:
+    """Donchian channel position and distances
+
+    Apply on: high, low, close
+    Returns: '{col}_donchian_pos_{w}', '{col}_donchian_upper_dist_{w}', '{col}_donchian_lower_dist_{w}'
+    """
+    keys = {
+        'pos': f'{column_name}_donchian_pos_{window}',
+        'ud': f'{column_name}_donchian_upper_dist_{window}',
+        'ld': f'{column_name}_donchian_lower_dist_{window}',
+    }
+    if len(close) < window:
+        return {keys['pos']: np.nan, keys['ud']: np.nan, keys['ld']: np.nan}
+    highest = high.tail(window).max()
+    lowest = low.tail(window).min()
+    rng = highest - lowest
+    if rng == 0:
+        return {keys['pos']: 0.5, keys['ud']: 0.0, keys['ld']: 0.0}
+    current = close.iloc[-1]
+    pos = (current - lowest) / rng
+    upper_dist = (highest - current) / rng
+    lower_dist = (current - lowest) / rng
+    return {keys['pos']: float(pos), keys['ud']: float(upper_dist), keys['ld']: float(lower_dist)}
+
+
+def calculate_aroon(high: pd.Series, low: pd.Series, window: int = 14, column_name: str = 'close') -> Dict[str, float]:
+    """Aroon Up/Down and oscillator
+
+    Apply on: high, low
+    Returns: '{col}_aroon_up_{w}', '{col}_aroon_down_{w}', '{col}_aroon_osc_{w}'
+    """
+    keys = {
+        'up': f'{column_name}_aroon_up_{window}',
+        'down': f'{column_name}_aroon_down_{window}',
+        'osc': f'{column_name}_aroon_osc_{window}',
+    }
+    if len(high) < window or len(low) < window:
+        return {keys['up']: np.nan, keys['down']: np.nan, keys['osc']: np.nan}
+    h_w = high.tail(window).reset_index(drop=True)
+    l_w = low.tail(window).reset_index(drop=True)
+    idx_high = int(h_w.idxmax())
+    idx_low = int(l_w.idxmin())
+    periods_since_high = (window - 1) - idx_high
+    periods_since_low = (window - 1) - idx_low
+    aroon_up = 100 * (window - periods_since_high) / window
+    aroon_down = 100 * (window - periods_since_low) / window
+    osc = aroon_up - aroon_down
+    return {keys['up']: float(aroon_up), keys['down']: float(aroon_down), keys['osc']: float(osc)}
+
+
+def calculate_return_zscore(series: pd.Series, window: int = 20, column_name: str = 'close') -> Dict[str, float]:
+    """Z-score of the latest log return over last `window` returns
+
+    Apply on: close (or any price series)
+    Returns: '{col}_ret_zscore_{w}'
+    """
+    key = f'{column_name}_ret_zscore_{window}'
+    if len(series) < window + 1:
+        return {key: np.nan}
+    returns = np.log(series / series.shift(1)).dropna()
+    r_window = returns.tail(window)
+    mean = r_window.mean()
+    std = r_window.std()
+    if std == 0 or np.isnan(std):
+        return {key: np.nan}
+    z = (returns.iloc[-1] - mean) / std
+    return {key: float(z)}
+
+
+def calculate_atr_normalized_distance(current_value: float, ref_value: float, atr_value: float,
+                                      column_name: str = 'close', ref_label: str = 'ref') -> Dict[str, float]:
+    """Distance between current and reference value normalized by ATR
+
+    Apply on: any scalar values with external ATR
+    Returns: '{col}_dist_{label}_atr'
+    """
+    key = f'{column_name}_dist_{ref_label}_atr'
+    if atr_value <= 0 or np.isnan(atr_value) or np.isnan(current_value) or np.isnan(ref_value):
+        return {key: np.nan}
+    return {key: float((current_value - ref_value) / atr_value)}
+
+
+# =============================================================================
+# ADVANCED MATH/LIQUIDITY/STAT FEATURES (low overlap with classic TA)
+# =============================================================================
+
+def calculate_roll_spread(close: pd.Series, window: int = 20, column_name: str = 'close') -> Dict[str, float]:
+    """Roll spread estimate using negative first-order autocovariance of price changes
+
+    Apply on: close
+    Returns: '{col}_roll_spread_{window}' (NaN if cov >= 0)
+    """
+    key = f'{column_name}_roll_spread_{window}'
+    if len(close) < window + 1:
+        return {key: np.nan}
+    dp = close.diff().dropna().tail(window)
+    if len(dp) < 2:
+        return {key: np.nan}
+    cov = np.cov(dp[1:], dp[:-1])[0, 1]
+    if cov >= 0 or np.isnan(cov):
+        return {key: np.nan}
+    spread = 2.0 * np.sqrt(-cov)
+    return {key: float(spread)}
+
+
+def calculate_amihud_illiquidity(close: pd.Series, volume: pd.Series, window: int = 20, column_name: str = 'close') -> Dict[str, float]:
+    """Amihud illiquidity: mean(|return| / dollar_volume) over window
+
+    Apply on: close, volume
+    Returns: '{col}_amihud_{window}'
+    """
+    key = f'{column_name}_amihud_{window}'
+    if len(close) < window + 1:
+        return {key: np.nan}
+    ret = np.log(close / close.shift(1)).abs().dropna().tail(window)
+    dollar_vol = (close * volume).dropna().tail(window)
+    if len(ret) < window or len(dollar_vol) < window:
+        return {key: np.nan}
+    div = ret / dollar_vol.replace(0, np.nan)
+    value = float(div.mean()) if div.notna().any() else np.nan
+    return {key: value}
+
+
+def calculate_turnover_zscore(close: pd.Series, volume: pd.Series, window: int = 20, column_name: str = 'turnover') -> Dict[str, float]:
+    """Turnover z-score: z of (close*volume) over window
+
+    Apply on: close, volume
+    Returns: '{col}_z_{window}' where col defaults to 'turnover'
+    """
+    key = f'{column_name}_z_{window}'
+    if len(close) < window or len(volume) < window:
+        return {key: np.nan}
+    turnover = (close * volume).tail(window)
+    mean = turnover.mean()
+    std = turnover.std()
+    if std == 0 or np.isnan(std):
+        return {key: np.nan}
+    z = (turnover.iloc[-1] - mean) / std
+    return {key: float(z)}
+
+
+def calculate_ljung_box_pvalue(series: pd.Series, lags: int = 5, window: int = 100, column_name: str = 'close') -> Dict[str, float]:
+    """Ljung–Box test p-value on recent returns (null: no autocorrelation up to lags)
+
+    Apply on: close (or any price series)
+    Returns: '{col}_ljung_p_{lags}_{window}'
+    """
+    from scipy.stats import chi2
+    key = f'{column_name}_ljung_p_{lags}_{window}'
+    if len(series) < window + 1:
+        return {key: np.nan}
+    r = np.log(series / series.shift(1)).dropna().tail(window)
+    n = len(r)
+    if n <= lags:
+        return {key: np.nan}
+    # autocorrelation estimates
+    r_mean = r.mean()
+    acf = []
+    arr = r - r_mean
+    denom = np.sum(arr**2)
+    for k in range(1, lags + 1):
+        num = np.sum(arr[k:] * arr[:-k])
+        acf.append(num / denom)
+    Q = n * (n + 2) * np.sum([(acf[k - 1] ** 2) / (n - k) for k in range(1, lags + 1)])
+    pval = float(chi2.sf(Q, df=lags))
+    return {key: pval}
+
+
+def calculate_permutation_entropy(series: pd.Series, window: int = 50, m: int = 3, column_name: str = 'close') -> Dict[str, float]:
+    """Permutation entropy (ordinal pattern entropy) of recent prices
+
+    Apply on: any price series
+    Returns: '{col}_perm_entropy_{m}_{window}' (normalized to [0,1])
+    """
+    key = f'{column_name}_perm_entropy_{m}_{window}'
+    if len(series) < window:
+        return {key: np.nan}
+    x = series.tail(window).values
+    n = len(x)
+    if n < m:
+        return {key: np.nan}
+    # build ordinal patterns
+    patterns = {}
+    for i in range(n - m + 1):
+        pattern = tuple(np.argsort(x[i:i + m]))
+        patterns[pattern] = patterns.get(pattern, 0) + 1
+    counts = np.array(list(patterns.values()), dtype=float)
+    p = counts / counts.sum()
+    ent = -np.sum(p * np.log(p + 1e-12)) / np.log(len(p))
+    return {key: float(ent)}
+
+
+def calculate_ou_half_life(series: pd.Series, window: int = 100, column_name: str = 'close') -> Dict[str, float]:
+    """Ornstein–Uhlenbeck half-life estimated via Δp_t = β p_{t-1} + ε over window
+
+    Apply on: any price series
+    Returns: '{col}_ou_halflife_{window}' (NaN if β >= 0)
+    """
+    key = f'{column_name}_ou_halflife_{window}'
+    if len(series) < window + 1:
+        return {key: np.nan}
+    p = series.tail(window + 1).values
+    dp = np.diff(p)
+    x = p[:-1]
+    x = x - x.mean()
+    denom = np.dot(x, x)
+    if denom == 0:
+        return {key: np.nan}
+    beta = float(np.dot(x, dp) / denom)
+    if beta >= 0:
+        return {key: np.nan}
+    halflife = float(-np.log(2) / beta)
+    return {key: halflife}
+
+
+def calculate_var_cvar(series: pd.Series, window: int = 50, alpha: float = 0.05, column_name: str = 'close') -> Dict[str, float]:
+    """Historical VaR and CVaR of returns over window
+
+    Apply on: close (or any price series)
+    Returns: '{col}_var_{pct}_{w}', '{col}_cvar_{pct}_{w}'
+    """
+    pct = int(alpha * 100)
+    var_key = f'{column_name}_var_{pct}_{window}'
+    cvar_key = f'{column_name}_cvar_{pct}_{window}'
+    if len(series) < window + 1:
+        return {var_key: np.nan, cvar_key: np.nan}
+    r = np.log(series / series.shift(1)).dropna().tail(window)
+    if len(r) < window:
+        return {var_key: np.nan, cvar_key: np.nan}
+    var = float(np.quantile(r, alpha))
+    tail = r[r <= var]
+    cvar = float(tail.mean()) if len(tail) > 0 else np.nan
+    return {var_key: var, cvar_key: cvar}
+
+
+def calculate_spectral_entropy(series: pd.Series, window: int = 50, column_name: str = 'close') -> Dict[str, float]:
+    """Spectral entropy of detrended recent prices using FFT power spectrum
+
+    Apply on: any price series
+    Returns: '{col}_spectral_entropy_{window}' in [0,1]
+    """
+    key = f'{column_name}_spectral_entropy_{window}'
+    if len(series) < window:
+        return {key: np.nan}
+    x = series.tail(window).values
+    x = x - x.mean()
+    fft_vals = np.abs(np.fft.rfft(x))
+    power = fft_vals**2
+    if power.sum() == 0:
+        return {key: np.nan}
+    p = power / power.sum()
+    ent = -np.sum(p * np.log(p + 1e-12)) / np.log(len(p))
+    return {key: float(ent)}
+
  
