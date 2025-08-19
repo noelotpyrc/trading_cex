@@ -48,23 +48,38 @@ def map_config_to_backtest_params(config):
         else:
             rsi_thresholds = {'1H': 75, '4H': 75, '12H': 75, '1D': 75}
     
-    # Extract exit thresholds
-    exit_1h_threshold = 70  # Default for long
-    exit_4h_threshold = 70  # Default for long
+    # Extract exit thresholds - only enable specified timeframes
+    exit_1h_threshold = None
+    exit_4h_threshold = None  
+    exit_12h_threshold = None
+    exit_1d_threshold = None
+    enabled_exit_timeframes = []
     
     if 'exit_rsi_rules' in config:
         for timeframe, threshold in config['exit_rsi_rules'].items():
             if timeframe == 'RSI_1H':
                 exit_1h_threshold = threshold
+                enabled_exit_timeframes.append('1H')
             elif timeframe == 'RSI_4H':
                 exit_4h_threshold = threshold
+                enabled_exit_timeframes.append('4H')
+            elif timeframe == 'RSI_12H':
+                exit_12h_threshold = threshold
+                enabled_exit_timeframes.append('12H')
+            elif timeframe == 'RSI_1D':
+                exit_1d_threshold = threshold
+                enabled_exit_timeframes.append('1D')
     
-    # If short strategy, adjust defaults
-    if config.get('signal_type', 'long') == 'short':
-        if exit_1h_threshold == 70:
-            exit_1h_threshold = 30
-        if exit_4h_threshold == 70:
+    # If no exit rules specified, use default based on signal type
+    if not enabled_exit_timeframes:
+        if config.get('signal_type', 'long') == 'long':
+            exit_4h_threshold = 70
+            enabled_exit_timeframes = ['4H']
+        else:
             exit_4h_threshold = 30
+            enabled_exit_timeframes = ['4H']
+    
+    # No adjustment needed for short strategy since we use exact thresholds from config
     
     # Map parameters
     params = {
@@ -73,6 +88,9 @@ def map_config_to_backtest_params(config):
         'rsi_thresholds': rsi_thresholds,
         'exit_1h_threshold': exit_1h_threshold,
         'exit_4h_threshold': exit_4h_threshold,
+        'exit_12h_threshold': exit_12h_threshold,
+        'exit_1d_threshold': exit_1d_threshold,
+        'enabled_exit_timeframes': enabled_exit_timeframes,
         'enable_bb_filter': config.get('enable_bb_filter', False),
         'bb_percent_threshold': config.get('bb_percent_threshold', 0.8),
         'enable_profit_target': config.get('enable_profit_target', False),

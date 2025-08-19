@@ -52,8 +52,11 @@ class ConservativeRSIStrategy(Strategy):
     min_required_count = 3  # for 'count' mode
     
     # === EXIT RSI THRESHOLDS ===
-    exit_rsi_1h_threshold = 50
-    exit_rsi_4h_threshold = 70
+    exit_1h_threshold = None
+    exit_4h_threshold = None
+    exit_12h_threshold = None
+    exit_1d_threshold = None
+    enabled_exit_timeframes = ['4H']  # Default to 4H if not specified
     
     # === BOLLINGER BAND FILTER ===
     enable_bb_filter = True
@@ -195,37 +198,71 @@ class ConservativeRSIStrategy(Strategy):
         return entry_signal, reason
 
     def check_rsi_exit_conditions(self):
-        """Check RSI exit conditions"""
+        """Check RSI exit conditions for only the enabled timeframes"""
         if not self.position:
             return False, ""
         
-        # Get current RSI for exit (try 1H first, fallback to 4H)
-        try:
-            # Use 1H RSI for exits (matches backtrader config)
-            rsi_1h_value = self.rsi_1h[-1]
-            rsi_4h_value = self.rsi_4h[-1]
-        except (IndexError, AttributeError):
-            return False, "Exit RSI data not accessible"
-        
-        # Use 1H RSI for exits (like backtrader)
-        if not np.isnan(rsi_1h_value):
-            if self.signal_type == 'long' and self.position.size > 0:
-                # Long exit: sell when RSI overbought
-                if rsi_1h_value >= self.exit_rsi_1h_threshold:
-                    return True, f"RSI exit: 1H RSI {rsi_1h_value:.1f} >= {self.exit_rsi_1h_threshold}"
-            elif self.signal_type == 'short' and self.position.size < 0:
-                # Short exit: cover when RSI oversold  
-                if rsi_1h_value <= self.exit_rsi_1h_threshold:
-                    return True, f"RSI exit: 1H RSI {rsi_1h_value:.1f} <= {self.exit_rsi_1h_threshold}"
-        
-        # Fallback to 4H RSI if 1H not available
-        elif not np.isnan(rsi_4h_value):
-            if self.signal_type == 'long' and self.position.size > 0:
-                if rsi_4h_value >= self.exit_rsi_4h_threshold:
-                    return True, f"RSI exit: 4H RSI {rsi_4h_value:.1f} >= {self.exit_rsi_4h_threshold}"
-            elif self.signal_type == 'short' and self.position.size < 0:
-                if rsi_4h_value <= self.exit_rsi_4h_threshold:
-                    return True, f"RSI exit: 4H RSI {rsi_4h_value:.1f} <= {self.exit_rsi_4h_threshold}"
+        # Check only the timeframes specified in enabled_exit_timeframes
+        for timeframe in self.enabled_exit_timeframes:
+            if timeframe == '1H' and self.exit_1h_threshold is not None:
+                try:
+                    rsi_value = self.rsi_1h[-1]
+                    if np.isnan(rsi_value):
+                        continue
+                    
+                    if self.signal_type == 'long' and self.position.size > 0:
+                        if rsi_value >= self.exit_1h_threshold:
+                            return True, f"RSI exit: 1H RSI {rsi_value:.1f} >= {self.exit_1h_threshold}"
+                    elif self.signal_type == 'short' and self.position.size < 0:
+                        if rsi_value <= self.exit_1h_threshold:
+                            return True, f"RSI exit: 1H RSI {rsi_value:.1f} <= {self.exit_1h_threshold}"
+                except (IndexError, AttributeError):
+                    continue
+            
+            elif timeframe == '4H' and self.exit_4h_threshold is not None:
+                try:
+                    rsi_value = self.rsi_4h[-1]
+                    if np.isnan(rsi_value):
+                        continue
+                    
+                    if self.signal_type == 'long' and self.position.size > 0:
+                        if rsi_value >= self.exit_4h_threshold:
+                            return True, f"RSI exit: 4H RSI {rsi_value:.1f} >= {self.exit_4h_threshold}"
+                    elif self.signal_type == 'short' and self.position.size < 0:
+                        if rsi_value <= self.exit_4h_threshold:
+                            return True, f"RSI exit: 4H RSI {rsi_value:.1f} <= {self.exit_4h_threshold}"
+                except (IndexError, AttributeError):
+                    continue
+            
+            elif timeframe == '12H' and self.exit_12h_threshold is not None:
+                try:
+                    rsi_value = self.rsi_12h[-1]
+                    if np.isnan(rsi_value):
+                        continue
+                    
+                    if self.signal_type == 'long' and self.position.size > 0:
+                        if rsi_value >= self.exit_12h_threshold:
+                            return True, f"RSI exit: 12H RSI {rsi_value:.1f} >= {self.exit_12h_threshold}"
+                    elif self.signal_type == 'short' and self.position.size < 0:
+                        if rsi_value <= self.exit_12h_threshold:
+                            return True, f"RSI exit: 12H RSI {rsi_value:.1f} <= {self.exit_12h_threshold}"
+                except (IndexError, AttributeError):
+                    continue
+            
+            elif timeframe == '1D' and self.exit_1d_threshold is not None:
+                try:
+                    rsi_value = self.rsi_1d[-1]
+                    if np.isnan(rsi_value):
+                        continue
+                    
+                    if self.signal_type == 'long' and self.position.size > 0:
+                        if rsi_value >= self.exit_1d_threshold:
+                            return True, f"RSI exit: 1D RSI {rsi_value:.1f} >= {self.exit_1d_threshold}"
+                    elif self.signal_type == 'short' and self.position.size < 0:
+                        if rsi_value <= self.exit_1d_threshold:
+                            return True, f"RSI exit: 1D RSI {rsi_value:.1f} <= {self.exit_1d_threshold}"
+                except (IndexError, AttributeError):
+                    continue
         
         return False, ""
 
@@ -337,8 +374,11 @@ def run_backtest(
     signal_type='long',
     entry_mode='all',
     rsi_thresholds={'1H': 30, '4H': 30, '12H': 30, '1D': 30},
-    exit_1h_threshold=70,
-    exit_4h_threshold=70,
+    exit_1h_threshold=None,
+    exit_4h_threshold=None,
+    exit_12h_threshold=None,
+    exit_1d_threshold=None,
+    enabled_exit_timeframes=['4H'],
     enable_bb_filter=True,
     bb_percent_threshold=0.8,
     enable_profit_target=False,
@@ -368,8 +408,11 @@ def run_backtest(
         'rsi_4h_threshold': rsi_thresholds['4H'], 
         'rsi_12h_threshold': rsi_thresholds['12H'],
         'rsi_1d_threshold': rsi_thresholds['1D'],
-        'exit_rsi_1h_threshold': exit_1h_threshold,
-        'exit_rsi_4h_threshold': exit_4h_threshold,
+        'exit_1h_threshold': exit_1h_threshold,
+        'exit_4h_threshold': exit_4h_threshold,
+        'exit_12h_threshold': exit_12h_threshold,
+        'exit_1d_threshold': exit_1d_threshold,
+        'enabled_exit_timeframes': enabled_exit_timeframes,
         'enable_bb_filter': enable_bb_filter,
         'bb_percent_threshold': bb_percent_threshold,
         'enable_profit_target': enable_profit_target,
@@ -387,7 +430,18 @@ def run_backtest(
     print(f"🎭 Signal Type: {signal_type.upper()}")
     print(f"📊 Entry Mode: {entry_mode.upper()}")
     print(f"📈 RSI Thresholds: {rsi_thresholds}")
-    print(f"📉 Exit Thresholds: 1H={exit_1h_threshold}, 4H={exit_4h_threshold}")
+    # Build exit info string 
+    exit_info = []
+    if exit_1h_threshold is not None and '1H' in enabled_exit_timeframes:
+        exit_info.append(f"1H={exit_1h_threshold}")
+    if exit_4h_threshold is not None and '4H' in enabled_exit_timeframes:
+        exit_info.append(f"4H={exit_4h_threshold}")
+    if exit_12h_threshold is not None and '12H' in enabled_exit_timeframes:
+        exit_info.append(f"12H={exit_12h_threshold}")
+    if exit_1d_threshold is not None and '1D' in enabled_exit_timeframes:
+        exit_info.append(f"1D={exit_1d_threshold}")
+    
+    print(f"📉 Exit Thresholds: {', '.join(exit_info) if exit_info else 'None'}")
     print(f"🎛️  BB Filter: {enable_bb_filter} (threshold: {bb_percent_threshold})")
     print(f"🎯 Profit Target: {enable_profit_target} ({profit_target_pct*100:.1f}%)")
     print(f"🛑 Stop Loss: {enable_stop_loss} ({stop_loss_pct*100:.1f}%)")
