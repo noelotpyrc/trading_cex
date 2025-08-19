@@ -15,7 +15,7 @@
   "enable_profit_target": false,
   "enable_stop_loss": false,
   "position_pct": 0.95,
-  "min_price": 1000.0,
+  "min_price": 10.0,
   "initial_cash": 100000,
   "show_plot": true,
   "verbose": true
