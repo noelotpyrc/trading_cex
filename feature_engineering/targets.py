@@ -301,3 +301,4 @@ def extract_forward_window(
     return data.iloc[start:end]
 
 
+
