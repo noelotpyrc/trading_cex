@@ -56,7 +56,9 @@ def _clean_dataframe(df: pd.DataFrame, target_col: str) -> Tuple[pd.DataFrame, L
         df = df.drop(columns=constant_cols)
 
     before_rows = len(df)
-    df = df.dropna(axis=0, how='any', subset=[target_col] + [c for c in df.columns if c not in ('timestamp')])
+    # Only enforce non-NA on features (exclude all y_* leakage columns) plus the selected target
+    feature_cols_no_y = [c for c in df.columns if c != 'timestamp' and not c.startswith('y_')]
+    df = df.dropna(axis=0, how='any', subset=feature_cols_no_y + [target_col])
     dropped_na_rows = before_rows - len(df)
 
     if 'timestamp' in df.columns:
@@ -107,7 +109,8 @@ def _write_outputs(out_dir: Path, target_col: str, train: pd.DataFrame, val: pd.
     out_dir.mkdir(parents=True, exist_ok=True)
 
     def split_xy(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
-        x_cols = [c for c in df.columns if c not in ('timestamp', target_col)]
+        # Exclude timestamp and all y_* columns from X to avoid leakage
+        x_cols = [c for c in df.columns if c != 'timestamp' and not c.startswith('y_')]
         X = df[x_cols]
         y = df[target_col].astype(float)
         return X, y
