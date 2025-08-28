@@ -17,13 +17,7 @@ def _load_pred(path: Path) -> pd.DataFrame:
     return df
 
 
-def _maybe_roll(s: pd.Series, window: int) -> pd.Series:
-    if window and window > 1:
-        return s.rolling(window, min_periods=max(1, window // 3)).mean()
-    return s
-
-
-def _make_traces(df: pd.DataFrame, name_prefix: str, rolling: int = 0) -> Tuple[list[go.Scatter], bool]:
+def _make_traces(df: pd.DataFrame, name_prefix: str) -> Tuple[list[go.Scatter], bool]:
     x = df['timestamp']
     traces: list[go.Scatter] = []
     has_band = ('pred_q05' in df.columns) and ('pred_q95' in df.columns)
@@ -31,8 +25,8 @@ def _make_traces(df: pd.DataFrame, name_prefix: str, rolling: int = 0) -> Tuple[
 
     # Outer Band (q95 then q05 with fill)
     if has_band:
-        q95 = _maybe_roll(df['pred_q95'], rolling)
-        q05 = _maybe_roll(df['pred_q05'], rolling)
+        q95 = df['pred_q95']
+        q05 = df['pred_q05']
         traces.append(
             go.Scatter(
                 x=x, y=q95, name=f'{name_prefix} q95',
@@ -53,8 +47,8 @@ def _make_traces(df: pd.DataFrame, name_prefix: str, rolling: int = 0) -> Tuple[
 
     # Inner Band (q75 then q25 with fill) if available
     if has_inner_band:
-        q75 = _maybe_roll(df['pred_q75'], rolling)
-        q25 = _maybe_roll(df['pred_q25'], rolling)
+        q75 = df['pred_q75']
+        q25 = df['pred_q25']
         traces.append(
             go.Scatter(
                 x=x, y=q75, name=f'{name_prefix} q75',
@@ -75,7 +69,7 @@ def _make_traces(df: pd.DataFrame, name_prefix: str, rolling: int = 0) -> Tuple[
 
     # Regression point estimate (pred_reg) as green line
     if 'pred_reg' in df.columns:
-        reg = _maybe_roll(df['pred_reg'], rolling)
+        reg = df['pred_reg']
         traces.append(
             go.Scatter(
                 x=x, y=reg, name=f'{name_prefix} pred_reg',
@@ -85,8 +79,8 @@ def _make_traces(df: pd.DataFrame, name_prefix: str, rolling: int = 0) -> Tuple[
             )
         )
 
-    # Target
-    y_true = _maybe_roll(df['y_true'], rolling)
+    # Target (original values)
+    y_true = df['y_true']
     traces.append(
         go.Scatter(
             x=x, y=y_true, name=f'{name_prefix} y_true',
@@ -132,7 +126,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='Interactive plot of quantile predictions vs target (val/test) with OHLCV candlesticks')
     parser.add_argument('--run-dir', type=Path, required=True, help='Path to model run directory with pred_val.csv and pred_test.csv')
     parser.add_argument('--prefix', type=str, default='quantile_preds_interactive', help='Output filename prefix (will create <prefix>_val.html and <prefix>_test.html)')
-    parser.add_argument('--rolling', type=int, default=0, help='Optional rolling window for smoothing (0=off)')
     parser.add_argument('--ohlcv-csv', type=Path, default=Path('data/BINANCE_BTCUSDT.P, 60.csv'), help='Path to original OHLCV CSV (with time/timestamp, open, high, low, close)')
     args = parser.parse_args()
 
@@ -143,7 +136,7 @@ def main() -> None:
 
     # Validation figure with candlestick subplot
     val_fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.07, row_heights=[0.65, 0.35])
-    val_traces, _ = _make_traces(val_df, 'val', rolling=args.rolling)
+    val_traces, _ = _make_traces(val_df, 'val')
     for tr in val_traces:
         val_fig.add_trace(tr, row=1, col=1)
     # Candlestick under predictions
@@ -173,7 +166,7 @@ def main() -> None:
 
     # Test figure with candlestick subplot
     test_fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.07, row_heights=[0.65, 0.35])
-    test_traces, _ = _make_traces(test_df, 'test', rolling=args.rolling)
+    test_traces, _ = _make_traces(test_df, 'test')
     for tr in test_traces:
         test_fig.add_trace(tr, row=1, col=1)
     test_start, test_end = test_df['timestamp'].min(), test_df['timestamp'].max()
