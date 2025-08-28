@@ -173,3 +173,46 @@ The core now includes several orthogonal features that complement classic TA and
 - Prefer a curated subset to reduce collinearity (e.g., choose 1–2 from each family).
 - Normalize features where appropriate (percent, z-scores, ATR-normalized) for regime robustness.
 - Keep label construction leakage-safe (forward windows shifted, no overlapping if needed) and include fees/slippage when modeling forward PnL.
+
+### Current Bar Features (t and t−1 only)
+
+Only use information from t and t−1. To obtain deeper lags (t−1/t−2, t−2/t−3, …), self-join the table with row shifts and reuse these same base columns.
+
+- Scope and downstream lags
+  - Build base features using at most t and t−1.
+  - For additional lags, join with `X.shift(k)` and reapply interactions as needed.
+
+- Close log return (t vs t−1) — `close_logret_current_<TF>`
+  - Inputs: Close C_t, Close C_{t−1}
+  - Formula: `log(C_t / C_{t−1})`
+
+- High–Low range (percent of Open) — `high_low_range_pct_current_<TF>`
+  - Inputs: High H_t, Low L_t, Open O_t
+  - Formula: `(H_t − L_t) / O_t`
+
+- Close–Open percent (of Open) — `close_open_pct_current_<TF>`
+  - Inputs: Close C_t, Open O_t
+  - Formula: `(C_t − O_t) / O_t`  (equivalently `C_t / O_t − 1`)
+
+- Log volume (current) — `log_volume_<TF>`
+  - Inputs: Volume V_t
+  - Formula: `log1p(V_t)`
+
+- Log volume delta (t vs t−1) — `log_volume_delta_current_<TF>`
+  - Inputs: Volume V_t, Volume V_{t−1}
+  - Formula: `log1p(V_t) − log1p(V_{t−1})`  (≈ `log(V_t/V_{t−1})` if V>0)
+
+- Sign of close log return — `sign_close_logret_current_<TF>`
+  - Inputs: `close_logret_current_<TF>`
+  - Formula: `sign(close_logret_current_<TF>)` in {−1, 0, 1}
+
+- Interactions (elementwise; names are concatenations `feature1_x_feature2`)
+  - Close log return × log volume — `close_logret_current_<TF>_x_log_volume_<TF>`
+  - Close log return × log volume delta — `close_logret_current_<TF>_x_log_volume_delta_current_<TF>`
+  - Sign(close log return) × log volume — `sign_close_logret_current_<TF>_x_log_volume_<TF>`
+  - High–Low range pct × log volume — `high_low_range_pct_current_<TF>_x_log_volume_<TF>`
+  - Close–Open pct × log volume — `close_open_pct_current_<TF>_x_log_volume_<TF>`
+
+- Conventions
+  - Timeframe suffix: `<TF> ∈ { _1H, _4H, _12H, _1D }` (right-closed resampling for higher TFs to avoid leakage)
+  - Only t and t−1 are used in base definitions; deeper lags are produced by self-joins
