@@ -16,3 +16,7 @@
 # Strategy task
 
 1. For regression model, add numerical metric (expected value based on quantile predictions) for creating trading signals
+
+# Research task
+
+1. Permutation of lookback data and forward data
