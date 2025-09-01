@@ -1,0 +1,85 @@
+// Example config for run_lgbm_pipeline.py
+// Notes:
+// - This file uses JSON with comments (JSONC) for documentation. Remove comments if a strict JSON parser is used.
+// - Paths can be absolute or relative to project root.
+{
+  // REQUIRED: Source data file. Must include the target column and optional 'timestamp'.
+  "input_data": "/path/to/merged_features_targets.csv",
+
+  // REQUIRED: Where to write non-split artifacts (model, metrics, predictions, etc.).
+  "output_dir": "/path/to/output/models",
+
+  // OPTIONAL: Root folder to store or reuse train/val/test splits.
+  // If omitted, defaults to `${output_dir}/training_splits`.
+  "training_splits_dir": "/path/to/output/training_splits",
+
+  // Target variable and objective
+  "target": {
+    // Column name for prediction
+    "variable": "y_logret_24h",
+
+    // Objective can be string or object:
+    // - String: "regression", "regression_l1", "huber", "fair", "poisson", "quantile", "mape", "gamma", "tweedie"
+    // - Object: {"name": "quantile", "params": {"alpha": 0.05}}
+    "objective": {
+      "name": "regression",
+      "params": {}
+    }
+  },
+
+  // Data splitting
+  "split": {
+    // Option A: Generate new splits (ratio/time-ordered)
+    "train_ratio": 0.7,
+    "val_ratio": 0.15,
+    "test_ratio": 0.15,
+    // Optional absolute time cutoffs (if your data has 'timestamp')
+    // "cutoff_start": "2024-12-31",
+    // "cutoff_mid": "2025-06-01",
+
+    // Option B: Reuse existing prepared splits folder (overrides ratios above)
+    // Point to a folder containing: X_train.csv, y_train.csv, X_val.csv, y_val.csv, X_test.csv, y_test.csv, prep_metadata.json
+    // "existing_dir": "/path/to/output/training_splits/prepared_YYYYMMDD_HHMMSS_y_logret_24h"
+  },
+
+  // Model section
+  "model": {
+    "type": "lgbm",
+
+    // Choose one:
+    // - No tuning: omit hyperparameter_tuning_method and hyperparameter_search_space
+    // - Grid search: set method to "grid" and provide a discrete search space
+    // - Bayesian: set method to "bayesian" (requires optuna) with discrete choices
+    // "hyperparameter_tuning_method": "grid",
+    // "hyperparameter_search_space": {
+    //   "learning_rate": [0.05, 0.1],
+    //   "num_leaves": [15, 31]
+    // },
+
+    // Time-series CV settings used during tuning (ignored if no tuning)
+    // "cv": {"method": "expanding", "n_folds": 3, "fold_val_size": 0.2, "gap": 0},
+
+    // Base/Final training parameters (also used as defaults during tuning)
+    "params": {
+      "learning_rate": 0.1,
+      "num_leaves": 31,
+      "max_depth": 6,
+      "min_data_in_leaf": 20,
+      "feature_fraction": 1.0,
+      "bagging_fraction": 1.0,
+      "bagging_freq": 1,
+      "lambda_l1": 0.0,
+      "lambda_l2": 0.0,
+      // Boosting/time settings
+      "num_boost_round": 200,
+      "early_stopping_rounds": 20,
+      "seed": 42
+    },
+
+    // Evaluation metrics preference (first is used as primary)
+    // For quantile objectives, use ["pinball_loss"]. For regression defaults to ["rmse"].
+    "eval_metrics": ["rmse"]
+  }
+}
+
+

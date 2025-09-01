@@ -121,41 +121,41 @@ def _write_outputs(out_dir: Path, target_col: str, train: pd.DataFrame, val: pd.
         y.to_csv(out_dir / f'y_{name}.csv', index=False, header=[target_col])
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description='Prepare ML training data from merged features-targets')
-    parser.add_argument('--input', type=Path, required=True, help='Path to merged_features_targets.csv')
-    parser.add_argument('--output-dir', type=Path, required=False, default=Path('/Volumes/Extreme SSD/trading_data/cex/training/BINANCE_BTCUSDT.P, 60/prepared'), help='Base output directory for prepared splits (target suffix will be appended)')
-    parser.add_argument('--target', type=str, required=False, default='y_logret_24h', help='Target column to predict')
-    parser.add_argument('--train-ratio', type=float, default=0.7)
-    parser.add_argument('--val-ratio', type=float, default=0.15)
-    parser.add_argument('--test-ratio', type=float, default=0.15)
-    parser.add_argument('--cutoff-start', type=str, default=None, help='Optional timestamp cutoff for train end (e.g., 2024-12-31)')
-    parser.add_argument('--cutoff-mid', type=str, default=None, help='Optional timestamp cutoff to split val/test (e.g., 2025-06-01)')
-    args = parser.parse_args()
+def prepare_splits(
+    input_path: Path,
+    output_dir: Path,
+    target: str,
+    train_ratio: float,
+    val_ratio: float,
+    test_ratio: float,
+    cutoff_start: Optional[str] = None,
+    cutoff_mid: Optional[str] = None,
+) -> Path:
+    """Programmatic API to prepare train/val/test splits.
 
-    merged = _load_merged(args.input)
+    Returns the final output directory where X_*/y_* and prep_metadata.json are written.
+    """
+    merged = _load_merged(input_path)
     num_rows_before, num_cols_before = merged.shape
 
-    if args.target not in merged.columns:
-        raise ValueError(f"Target column '{args.target}' not found. Available: {len(merged.columns)} columns")
+    if target not in merged.columns:
+        raise ValueError(f"Target column '{target}' not found. Available: {len(merged.columns)} columns")
 
-    cleaned, dropped_constants, dropped_na_rows = _clean_dataframe(merged.copy(), target_col=args.target)
+    cleaned, dropped_constants, dropped_na_rows = _clean_dataframe(merged.copy(), target_col=target)
     num_rows_after, num_cols_after = cleaned.shape
 
     split_cfg = SplitConfig(
-        train_ratio=args.train_ratio,
-        val_ratio=args.val_ratio,
-        test_ratio=args.test_ratio,
-        cutoff_dates=(args.cutoff_start, args.cutoff_mid),
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        test_ratio=test_ratio,
+        cutoff_dates=(cutoff_start, cutoff_mid),
     )
     train, val, test = _time_based_split(cleaned, split_cfg)
 
-    # Append target name as postfix to the output directory
-    final_out_dir = args.output_dir.parent / f"{args.output_dir.name}_{args.target}"
+    final_out_dir = output_dir.parent / f"{output_dir.name}_{target}"
 
-    _write_outputs(final_out_dir, args.target, train, val, test)
+    _write_outputs(final_out_dir, target, train, val, test)
 
-    # Collect timestamps metadata
     def _ts_list(df: pd.DataFrame) -> List[str]:
         if 'timestamp' in df.columns:
             return df['timestamp'].astype(str).tolist()
@@ -170,19 +170,19 @@ def main() -> None:
         return {'min': None, 'max': None}
 
     meta = PrepMetadata(
-        input_path=str(args.input),
+        input_path=str(input_path),
         num_rows_before=num_rows_before,
         num_rows_after=num_rows_after,
         num_features_before=num_cols_before,
         num_features_after=num_cols_after,
-        target_column=args.target,
-        split_strategy='cutoff' if (args.cutoff_start or args.cutoff_mid) else 'ratio_time_order',
+        target_column=target,
+        split_strategy='cutoff' if (cutoff_start or cutoff_mid) else 'ratio_time_order',
         split_params={
-            'train_ratio': str(args.train_ratio),
-            'val_ratio': str(args.val_ratio),
-            'test_ratio': str(args.test_ratio),
-            'cutoff_start': str(args.cutoff_start),
-            'cutoff_mid': str(args.cutoff_mid),
+            'train_ratio': str(train_ratio),
+            'val_ratio': str(val_ratio),
+            'test_ratio': str(test_ratio),
+            'cutoff_start': str(cutoff_start),
+            'cutoff_mid': str(cutoff_mid),
         },
         dropped_constant_columns=dropped_constants,
         dropped_na_rows=dropped_na_rows,
@@ -200,8 +200,40 @@ def main() -> None:
     with open(final_out_dir / 'prep_metadata.json', 'w') as f:
         json.dump(asdict(meta), f, indent=2, default=str)
 
+    return final_out_dir
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='Prepare ML training data from merged features-targets')
+    parser.add_argument('--input', type=Path, required=True, help='Path to merged_features_targets.csv')
+    parser.add_argument('--output-dir', type=Path, required=False, default=Path('/Volumes/Extreme SSD/trading_data/cex/training/BINANCE_BTCUSDT.P, 60/prepared'), help='Base output directory for prepared splits (target suffix will be appended)')
+    parser.add_argument('--target', type=str, required=False, default='y_logret_24h', help='Target column to predict')
+    parser.add_argument('--train-ratio', type=float, default=0.7)
+    parser.add_argument('--val-ratio', type=float, default=0.15)
+    parser.add_argument('--test-ratio', type=float, default=0.15)
+    parser.add_argument('--cutoff-start', type=str, default=None, help='Optional timestamp cutoff for train end (e.g., 2024-12-31)')
+    parser.add_argument('--cutoff-mid', type=str, default=None, help='Optional timestamp cutoff to split val/test (e.g., 2025-06-01)')
+    args = parser.parse_args()
+
+    final_out_dir = prepare_splits(
+        input_path=args.input,
+        output_dir=args.output_dir,
+        target=args.target,
+        train_ratio=args.train_ratio,
+        val_ratio=args.val_ratio,
+        test_ratio=args.test_ratio,
+        cutoff_start=args.cutoff_start,
+        cutoff_mid=args.cutoff_mid,
+    )
+
     print(f"Prepared data written to: {final_out_dir}")
-    print(f"Train/Val/Test sizes: {len(train)}/{len(val)}/{len(test)}")
+    # sizes are already available in metadata; re-load to print
+    meta = json.load(open(final_out_dir / 'prep_metadata.json', 'r'))
+    print(
+        f"Train/Val/Test sizes: {len(meta['split_timestamps']['train'])}/"
+        f"{len(meta['split_timestamps']['val'])}/"
+        f"{len(meta['split_timestamps']['test'])}"
+    )
 
 
 if __name__ == '__main__':
