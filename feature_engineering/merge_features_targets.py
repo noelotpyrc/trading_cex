@@ -13,11 +13,21 @@ DEFAULT_FEATURES_TO_REMOVE: List[str] = [
     # 4H
     "close_roll_spread_20_4H",
     "close_ou_halflife_100_4H",
+    # 4H time features (redundant with base 1H time features)
+    "time_hour_of_day_4H",
+    "time_day_of_week_4H",
+    "time_day_of_month_4H",
+    "time_month_of_year_4H",
     # 12H
     "close_hurst_100_12H",
     "close_ljung_p_5_100_12H",
     "close_ou_halflife_100_12H",
     "close_roll_spread_20_12H",
+    # 12H time features (redundant with base 1H time features)
+    "time_hour_of_day_12H",
+    "time_day_of_week_12H",
+    "time_day_of_month_12H",
+    "time_month_of_year_12H",
     # 1D
     "close_vol_ratio_5_50_1D",
     "close_skew_30_1D",
@@ -32,6 +42,11 @@ DEFAULT_FEATURES_TO_REMOVE: List[str] = [
     "close_cvar_5_50_1D",
     "close_spectral_entropy_50_1D",
     "close_roll_spread_20_1D",
+    # 1D time features (redundant with base 1H time features)
+    "time_hour_of_day_1D",
+    "time_day_of_week_1D",
+    "time_day_of_month_1D",
+    "time_month_of_year_1D",
 ]
 
 
