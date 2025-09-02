@@ -262,11 +262,16 @@ def _get_cv_config(model_cfg: Dict[str, Any]) -> Dict[str, Any]:
     n_folds = int(cv.get('n_folds', 3))
     fold_val_size = cv.get('fold_val_size', 0.2)  # fraction (0,1] or absolute int
     gap = int(cv.get('gap', 0))  # number of rows between train end and val start
+    log_period = int(cv.get('log_period', 0))  # 0 disables per-iter logging
     return {
         'method': method,
         'n_folds': max(1, n_folds),
         'fold_val_size': fold_val_size,
         'gap': max(0, gap),
+        # Allow CV to have its own training schedule; fall back handled by callers
+        'num_boost_round': int(cv.get('num_boost_round', 1000)),
+        'early_stopping_rounds': int(cv.get('early_stopping_rounds', 100)),
+        'log_period': max(0, log_period),
     }
 
 
@@ -412,8 +417,10 @@ def _tune_grid_search(config: Dict[str, Any], data_dir: Path, search_space: Dict
     X_full_train, y_full_train = _read_split(data_dir, 'train', target)
 
     base_params = config['model'].get('params', {})
-    num_boost_round = int(base_params.get('num_boost_round', 1000))
-    early_stopping_rounds = int(base_params.get('early_stopping_rounds', 100))
+    # Use CV-specific schedule if provided; otherwise fall back to base training schedule
+    cv_cfg = _get_cv_config(config['model'])
+    num_boost_round = int(cv_cfg.get('num_boost_round', base_params.get('num_boost_round', 1000)))
+    early_stopping_rounds = int(cv_cfg.get('early_stopping_rounds', base_params.get('early_stopping_rounds', 100)))
 
     cv_cfg = _get_cv_config(config['model'])
     folds = _build_time_series_folds(
@@ -453,14 +460,19 @@ def _tune_grid_search(config: Dict[str, Any], data_dir: Path, search_space: Dict
             lgb_params['alpha'] = float(objective_params['alpha'])
 
         # Use LightGBM's built-in CV with sklearn splitter
+        logging.info(f"[grid] Trial {trial_idx} params: {json.dumps(trial_params, sort_keys=True)}")
+        logging.info(f"[grid] Trial {trial_idx}: starting lgb.cv with num_boost_round={num_boost_round}, early_stopping_rounds={early_stopping_rounds}, folds={cv_cfg['n_folds']}")
+        callbacks_list = [
+            lgb.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=True),
+        ]
+        if int(cv_cfg.get('log_period', 0)) > 0:
+            callbacks_list.append(lgb.log_evaluation(period=int(cv_cfg['log_period'])))
         cv_results = lgb.cv(
             params=lgb_params,
             train_set=lgb_dataset,
             folds=folds,
             num_boost_round=num_boost_round,
-            callbacks=[
-                lgb.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=True),
-            ],
+            callbacks=callbacks_list,
         )
         # cv returns dict of lists like 'rmse-mean'; infer key
         mean_key = f"{lgb_metric}-mean"
@@ -514,8 +526,10 @@ def _tune_bayesian(config: Dict[str, Any], data_dir: Path, search_space: Dict[st
     X_full_train, y_full_train = _read_split(data_dir, 'train', target)
 
     base_params = config['model'].get('params', {})
-    num_boost_round = int(base_params.get('num_boost_round', 1000))
-    early_stopping_rounds = int(base_params.get('early_stopping_rounds', 100))
+    # Use CV-specific schedule if provided; otherwise fall back to base training schedule
+    cv_cfg = _get_cv_config(config['model'])
+    num_boost_round = int(cv_cfg.get('num_boost_round', base_params.get('num_boost_round', 1000)))
+    early_stopping_rounds = int(cv_cfg.get('early_stopping_rounds', base_params.get('early_stopping_rounds', 100)))
 
     primary = _primary_metric_for_objective(objective_name, config['model'].get('eval_metrics'))
 
@@ -552,14 +566,19 @@ def _tune_bayesian(config: Dict[str, Any], data_dir: Path, search_space: Dict[st
         if objective_name == 'quantile':
             lgb_params['alpha'] = float(objective_params['alpha'])
 
+        logging.info(f"[bayes] Trial {trial.number} params: {json.dumps(trial_params, sort_keys=True)}")
+        logging.info(f"[bayes] Trial {trial.number}: starting lgb.cv with num_boost_round={num_boost_round}, early_stopping_rounds={early_stopping_rounds}, folds={cv_cfg['n_folds']}")
+        callbacks_list = [
+            lgb.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=True),
+        ]
+        if int(cv_cfg.get('log_period', 0)) > 0:
+            callbacks_list.append(lgb.log_evaluation(period=int(cv_cfg['log_period'])))
         cv_results = lgb.cv(
             params=lgb_params,
             train_set=lgb_dataset,
             folds=folds,
             num_boost_round=num_boost_round,
-            callbacks=[
-                lgb.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=True),
-            ],
+            callbacks=callbacks_list,
         )
         mean_key = f"{lgb_metric}-mean"
         if mean_key not in cv_results:
@@ -758,13 +777,19 @@ def main():
         data_dir = prepare_training_data(config)
         
         # Step 2: Hyperparameter tuning
-        best_params = tune_hyperparameters(config, data_dir)
+        tuned_best_params = tune_hyperparameters(config, data_dir)
+        # Expose tuned params for persistence/metadata
+        config['_tuned_best_params'] = tuned_best_params
+
+        # Choose final params source: tuned best vs fixed config params
+        use_best_for_final = bool(config['model'].get('use_best_params_for_final', True))
+        final_params = tuned_best_params if use_best_for_final else config['model'].get('params', {})
         
-        # Step 3: Train model
-        model, metrics, run_dir = train_model(config, data_dir, best_params)
+        # Step 3: Train model with chosen final params
+        model, metrics, run_dir = train_model(config, data_dir, final_params)
         
         # Step 4: Persist pipeline metadata into the same run_dir
-        run_dir = persist_results(config, run_dir, metrics, best_params, data_dir)
+        run_dir = persist_results(config, run_dir, metrics, final_params, data_dir)
         
         logging.info(f"Pipeline completed successfully! Results in: {run_dir}")
         
