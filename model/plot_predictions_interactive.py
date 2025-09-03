@@ -152,22 +152,93 @@ def _subset_ohlcv_for_window(ohlcv: pd.DataFrame, start_ts, end_ts) -> pd.DataFr
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description='Interactive plot of quantile predictions vs target (val/test) with OHLCV candlesticks')
+    parser = argparse.ArgumentParser(description='Interactive plot of quantile predictions vs target (val/test) with OHLCV candlesticks. Optionally overlay expected return from signals CSVs.')
     parser.add_argument('--run-dir', type=Path, required=True, help='Path to model run directory with pred_val.csv and pred_test.csv')
     parser.add_argument('--prefix', type=str, default='quantile_preds_interactive', help='Output filename prefix (will create <prefix>_val.html and <prefix>_test.html)')
     parser.add_argument('--ohlcv-csv', type=Path, default=Path('data/BINANCE_BTCUSDT.P, 60.csv'), help='Path to original OHLCV CSV (with time/timestamp, open, high, low, close)')
+    parser.add_argument('--signals-val', type=Path, required=False, help='Optional path to signals CSV for validation (e.g., pred_val_signals.csv)')
+    parser.add_argument('--signals-test', type=Path, required=False, help='Optional path to signals CSV for test (e.g., pred_test_signals.csv)')
+    parser.add_argument('--expected-method', choices=['avg', 'conservative'], default='avg', help='Which expected return column to plot from signals (exp_ret_avg or exp_ret_conservative)')
+    parser.add_argument('--mark-cross-violations', action='store_true', help='Mark points where cross_violations > 0 on expected return line')
+    parser.add_argument('--show-prob-up', action='store_true', help='Overlay probability of positive return (prob_up) on a secondary y-axis')
+    parser.add_argument('--prob-thresholds', type=float, nargs=2, metavar=('TAU_LONG', 'TAU_SHORT'), default=None, help='Optional probability thresholds to draw as reference lines when showing prob_up')
     args = parser.parse_args()
 
     run_dir: Path = args.run_dir
     val_df = _load_pred(run_dir / 'pred_val.csv')
     test_df = _load_pred(run_dir / 'pred_test.csv')
+    sig_val_df: pd.DataFrame | None = None
+    sig_test_df: pd.DataFrame | None = None
+    method_col = 'exp_ret_avg' if args.expected_method == 'avg' else 'exp_ret_conservative'
+    if args.signals_val and args.signals_val.exists():
+        sig_val_df = _load_pred(args.signals_val)
+    if args.signals_test and args.signals_test.exists():
+        sig_test_df = _load_pred(args.signals_test)
     ohlcv_df = _load_ohlcv(args.ohlcv_csv)
 
-    # Validation figure with candlestick subplot
-    val_fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.07, row_heights=[0.65, 0.35])
+    # Validation figure with candlestick subplot (secondary y on row 1 for prob_up)
+    val_fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.07,
+        row_heights=[0.65, 0.35],
+        specs=[[{"secondary_y": True}], [{}]],
+    )
     val_traces, _ = _make_traces(val_df, 'val')
     for tr in val_traces:
-        val_fig.add_trace(tr, row=1, col=1)
+        val_fig.add_trace(tr, row=1, col=1, secondary_y=False)
+    # Overlay expected return from signals if available
+    if sig_val_df is not None and method_col in sig_val_df.columns:
+        val_fig.add_trace(
+            go.Scatter(
+                x=sig_val_df['timestamp'], y=sig_val_df[method_col], name=f'val {method_col}',
+                line=dict(color='#bcbd22', width=2),
+                mode='lines',
+                hovertemplate='%{x}<br>'+method_col+'=%{y:.6f}<extra></extra>'
+            ),
+            row=1, col=1, secondary_y=False,
+        )
+        if args.mark_cross_violations and 'cross_violations' in sig_val_df.columns:
+            mask = (sig_val_df['cross_violations'] > 0) & sig_val_df[method_col].notna()
+            if mask.any():
+                custom = list(zip(sig_val_df.loc[mask, 'cross_violations'], sig_val_df.loc[mask, 'max_cross_gap'] if 'max_cross_gap' in sig_val_df.columns else [None] * mask.sum()))
+                val_fig.add_trace(
+                    go.Scatter(
+                        x=sig_val_df.loc[mask, 'timestamp'],
+                        y=sig_val_df.loc[mask, method_col],
+                        name='val cross violations',
+                        mode='markers',
+                        marker=dict(color='#d62728', size=7, symbol='x'),
+                        customdata=custom,
+                        hovertemplate='%{x}<br>'+method_col+'=%{y:.6f}<br>cross=%{customdata[0]}<br>gap=%{customdata[1]:.6f}<extra></extra>'
+                    ),
+                    row=1, col=1, secondary_y=False,
+                )
+
+    # Optional prob_up on secondary y-axis
+    if args.show_prob_up and sig_val_df is not None and 'prob_up' in sig_val_df.columns:
+        val_fig.add_trace(
+            go.Scatter(
+                x=sig_val_df['timestamp'], y=sig_val_df['prob_up'], name='val prob_up',
+                line=dict(color='#2ca02c', width=1), mode='lines',
+                hovertemplate='%{x}<br>prob_up=%{y:.3f}<extra></extra>'
+            ),
+            row=1, col=1, secondary_y=True,
+        )
+        # Threshold reference lines, if provided
+        if args.prob_thresholds:
+            tau_long, tau_short = float(args.prob_thresholds[0]), float(args.prob_thresholds[1])
+            for tau, name in [(tau_long, 'τ_long'), (tau_short, 'τ_short')]:
+                val_fig.add_trace(
+                    go.Scatter(
+                        x=[sig_val_df['timestamp'].min(), sig_val_df['timestamp'].max()],
+                        y=[tau, tau], name=f'val {name}',
+                        line=dict(color='#2ca02c', width=1, dash='dash'), mode='lines',
+                        hovertemplate=f'threshold={tau:.3f}<extra></extra>'
+                    ),
+                    row=1, col=1, secondary_y=True,
+                )
     # Candlestick under predictions
     val_start, val_end = val_df['timestamp'].min(), val_df['timestamp'].max()
     val_ohlcv = _subset_ohlcv_for_window(ohlcv_df, val_start, val_end)
@@ -193,11 +264,68 @@ def main() -> None:
     out_val = run_dir / f"{args.prefix}_val.html"
     val_fig.write_html(out_val)
 
-    # Test figure with candlestick subplot
-    test_fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.07, row_heights=[0.65, 0.35])
+    # Test figure with candlestick subplot (secondary y on row 1 for prob_up)
+    test_fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.07,
+        row_heights=[0.65, 0.35],
+        specs=[[{"secondary_y": True}], [{}]],
+    )
     test_traces, _ = _make_traces(test_df, 'test')
     for tr in test_traces:
-        test_fig.add_trace(tr, row=1, col=1)
+        test_fig.add_trace(tr, row=1, col=1, secondary_y=False)
+    # Overlay expected return from signals if available
+    if sig_test_df is not None and method_col in sig_test_df.columns:
+        test_fig.add_trace(
+            go.Scatter(
+                x=sig_test_df['timestamp'], y=sig_test_df[method_col], name=f'test {method_col}',
+                line=dict(color='#bcbd22', width=2),
+                mode='lines',
+                hovertemplate='%{x}<br>'+method_col+'=%{y:.6f}<extra></extra>'
+            ),
+            row=1, col=1, secondary_y=False,
+        )
+        if args.mark_cross_violations and 'cross_violations' in sig_test_df.columns:
+            mask = (sig_test_df['cross_violations'] > 0) & sig_test_df[method_col].notna()
+            if mask.any():
+                custom = list(zip(sig_test_df.loc[mask, 'cross_violations'], sig_test_df.loc[mask, 'max_cross_gap'] if 'max_cross_gap' in sig_test_df.columns else [None] * mask.sum()))
+                test_fig.add_trace(
+                    go.Scatter(
+                        x=sig_test_df.loc[mask, 'timestamp'],
+                        y=sig_test_df.loc[mask, method_col],
+                        name='test cross violations',
+                        mode='markers',
+                        marker=dict(color='#d62728', size=7, symbol='x'),
+                        customdata=custom,
+                        hovertemplate='%{x}<br>'+method_col+'=%{y:.6f}<br>cross=%{customdata[0]}<br>gap=%{customdata[1]:.6f}<extra></extra>'
+                    ),
+                    row=1, col=1, secondary_y=False,
+                )
+
+    # Optional prob_up on secondary y-axis (test)
+    if args.show_prob_up and sig_test_df is not None and 'prob_up' in sig_test_df.columns:
+        test_fig.add_trace(
+            go.Scatter(
+                x=sig_test_df['timestamp'], y=sig_test_df['prob_up'], name='test prob_up',
+                line=dict(color='#2ca02c', width=1), mode='lines',
+                hovertemplate='%{x}<br>prob_up=%{y:.3f}<extra></extra>'
+            ),
+            row=1, col=1, secondary_y=True,
+        )
+        if args.prob_thresholds:
+            tau_long, tau_short = float(args.prob_thresholds[0]), float(args.prob_thresholds[1])
+            for tau, name in [(tau_long, 'τ_long'), (tau_short, 'τ_short')]:
+                test_fig.add_trace(
+                    go.Scatter(
+                        x=[sig_test_df['timestamp'].min(), sig_test_df['timestamp'].max()],
+                        y=[tau, tau], name=f'test {name}',
+                        line=dict(color='#2ca02c', width=1, dash='dash'), mode='lines',
+                        hovertemplate=f'threshold={tau:.3f}<extra></extra>'
+                    ),
+                    row=1, col=1, secondary_y=True,
+                )
     test_start, test_end = test_df['timestamp'].min(), test_df['timestamp'].max()
     test_ohlcv = _subset_ohlcv_for_window(ohlcv_df, test_start, test_end)
     if not test_ohlcv.empty:
