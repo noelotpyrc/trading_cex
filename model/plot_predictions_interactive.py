@@ -1,6 +1,7 @@
 import argparse
+import re
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, List
 
 import pandas as pd
 from plotly.subplots import make_subplots
@@ -17,53 +18,81 @@ def _load_pred(path: Path) -> pd.DataFrame:
     return df
 
 
-def _make_traces(df: pd.DataFrame, name_prefix: str) -> Tuple[list[go.Scatter], bool]:
+def _make_traces(df: pd.DataFrame, name_prefix: str) -> Tuple[List[go.Scatter], bool]:
     x = df['timestamp']
-    traces: list[go.Scatter] = []
-    has_band = ('pred_q05' in df.columns) and ('pred_q95' in df.columns)
-    has_inner_band = ('pred_q25' in df.columns) and ('pred_q75' in df.columns)
+    traces: List[go.Scatter] = []
 
-    # Outer Band (q95 then q05 with fill)
-    if has_band:
-        q95 = df['pred_q95']
-        q05 = df['pred_q05']
-        traces.append(
-            go.Scatter(
-                x=x, y=q95, name=f'{name_prefix} q95',
-                line=dict(color='red', width=1),
-                mode='lines',
-                hovertemplate='%{x}<br>q95=%{y:.6f}<extra></extra>'
-            )
-        )
-        traces.append(
-            go.Scatter(
-                x=x, y=q05, name=f'{name_prefix} q05',
-                line=dict(color='blue', width=1),
-                mode='lines',
-                fill='tonexty', fillcolor='rgba(100,149,237,0.15)',
-                hovertemplate='%{x}<br>q05=%{y:.6f}<extra></extra>'
-            )
-        )
+    # Detect available quantile columns like pred_q05, pred_q50, pred_q95
+    q_cols = {}
+    for c in df.columns:
+        m = re.fullmatch(r"pred_q(\d{2})", str(c))
+        if m:
+            q = int(m.group(1))
+            q_cols[q] = c
 
-    # Inner Band (q75 then q25 with fill) if available
-    if has_inner_band:
-        q75 = df['pred_q75']
-        q25 = df['pred_q25']
+    # Prepare symmetric bands (outer to inner)
+    band_colors = {
+        95: ('#d62728', 'rgba(214,39,40,0.12)'),   # red
+        90: ('#9467bd', 'rgba(148,103,189,0.12)'), # purple
+        85: ('#17becf', 'rgba(23,190,207,0.12)'),  # teal
+        75: ('#ff7f0e', 'rgba(255,127,14,0.15)'),  # orange
+    }
+
+    added_any_band = False
+    plotted_cols: set[str] = set()
+    for upper in [95, 90, 85, 75]:
+        lower = 100 - upper
+        if upper in q_cols and lower in q_cols:
+            ucol = q_cols[upper]
+            lcol = q_cols[lower]
+            ucolor, fillcolor = band_colors.get(upper, ('#999999', 'rgba(153,153,153,0.12)'))
+            # Upper line
+            traces.append(
+                go.Scatter(
+                    x=x, y=df[ucol], name=f'{name_prefix} {ucol}',
+                    line=dict(color=ucolor, width=1),
+                    mode='lines',
+                    hovertemplate='%{x}<br>'+ucol+'=%{y:.6f}<extra></extra>'
+                )
+            )
+            # Lower line with fill to create band
+            traces.append(
+                go.Scatter(
+                    x=x, y=df[lcol], name=f'{name_prefix} {lcol}',
+                    line=dict(color=ucolor, width=1),
+                    mode='lines',
+                    fill='tonexty', fillcolor=fillcolor,
+                    hovertemplate='%{x}<br>'+lcol+'=%{y:.6f}<extra></extra>'
+                )
+            )
+            added_any_band = True
+            plotted_cols.add(ucol)
+            plotted_cols.add(lcol)
+
+    # Median (q50) as center line if available
+    if 50 in q_cols:
         traces.append(
             go.Scatter(
-                x=x, y=q75, name=f'{name_prefix} q75',
-                line=dict(color='orange', width=1),
+                x=x, y=df[q_cols[50]], name=f'{name_prefix} pred_q50',
+                line=dict(color='green', width=1),
                 mode='lines',
-                hovertemplate='%{x}<br>q75=%{y:.6f}<extra></extra>'
+                hovertemplate='%{x}<br>q50=%{y:.6f}<extra></extra>'
             )
         )
+        plotted_cols.add(q_cols[50])
+
+    # Plot any single quantiles not part of a symmetric band (e.g., q05, q10, q15 when q95/q90/q85 missing)
+    for q in sorted(q_cols.keys()):
+        col = q_cols[q]
+        if col in plotted_cols:
+            continue
+        color = '#1f77b4' if q < 50 else '#d62728'
         traces.append(
             go.Scatter(
-                x=x, y=q25, name=f'{name_prefix} q25',
-                line=dict(color='orange', width=1),
+                x=x, y=df[col], name=f'{name_prefix} {col}',
+                line=dict(color=color, width=1, dash='dot'),
                 mode='lines',
-                fill='tonexty', fillcolor='rgba(255,165,0,0.15)',
-                hovertemplate='%{x}<br>q25=%{y:.6f}<extra></extra>'
+                hovertemplate='%{x}<br>'+col+'=%{y:.6f}<extra></extra>'
             )
         )
 
@@ -90,7 +119,7 @@ def _make_traces(df: pd.DataFrame, name_prefix: str) -> Tuple[list[go.Scatter], 
         )
     )
 
-    return traces, has_band
+    return traces, added_any_band
 
 
 def _load_ohlcv(path: Path) -> pd.DataFrame:
