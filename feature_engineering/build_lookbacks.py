@@ -8,7 +8,7 @@ Each timeframe PKL stores a dictionary with:
   - 'rows': dict mapping row timestamp string -> lookback DataFrame for that timeframe
 
 Usage:
-  python store_lookbacks.py --input data/ohlcv.csv --output data/lookbacks --timeframes 1H 4H 12H 1D
+  python feature_engineering/build_lookbacks.py --input data/ohlcv.csv --output data/lookbacks --timeframes 1H 4H 12H 1D
 """
 
 import os

@@ -261,7 +261,7 @@ def compute_current_bar_features_from_lookback(
 
 def build_current_bar_features_from_store(store: dict, timeframe: str) -> pd.DataFrame:
     """
-    For a timeframe store produced by store_lookbacks.py, compute Current Bar
+    For a timeframe store produced by build_lookbacks.py, compute Current Bar
     Features per base timestamp by evaluating each row's lookback and keeping
     only the last-bar features.
     """

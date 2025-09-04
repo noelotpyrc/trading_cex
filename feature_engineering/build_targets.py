@@ -3,7 +3,7 @@ Process OHLCV data and generate forward-window target variables.
 
 Usage examples:
   # Basic: 1H data, horizons 3,6,12,24 bars, TP/SL pairs 1.5%/1.0%
-  ./venv/bin/python feature_engineering/process_targets.py \
+  ./venv/bin/python feature_engineering/build_targets.py \
     --input /path/to/ohlcv.parquet \
     --base-dir '/Volumes/Extreme SSD/trading_data/cex/targets' \
     --dataset 'BINANCE_BTCUSDT.P, 60' \

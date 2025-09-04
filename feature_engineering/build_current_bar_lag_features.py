@@ -5,12 +5,12 @@ and (optionally) original 1H OHLCV.
 Usage examples:
 
 1) List datasets found under the lookbacks directory:
-   python feature_engineering/run_current_bar_features.py --list \
+   python feature_engineering/build_current_bar_lag_features.py --list \
      --lookbacks-dir "/Volumes/Extreme SSD/trading_data/cex/lookbacks"
 
 2) Build features for a dataset using saved lookbacks only (1H reconstructed
    from lookbacks_1H.pkl):
-   python feature_engineering/run_current_bar_features.py \
+   python feature_engineering/build_current_bar_lag_features.py \
      --dataset "BINANCE_BTCUSDT.P, 60" \
      --lookbacks-dir "/Volumes/Extreme SSD/trading_data/cex/lookbacks" \
      --timeframes 1H 4H 12H 1D \
@@ -18,7 +18,7 @@ Usage examples:
      --output "/Volumes/Extreme SSD/trading_data/cex/features/current_bar_with_lags.parquet"
 
 3) Same as (2) but use an original 1H OHLCV file for the 1H path:
-   python feature_engineering/run_current_bar_features.py \
+   python feature_engineering/build_current_bar_lag_features.py \
      --dataset "BINANCE_BTCUSDT.P, 60" \
      --lookbacks-dir "/Volumes/Extreme SSD/trading_data/cex/lookbacks" \
      --ohlcv-1h "/path/to/original_1h.csv" \

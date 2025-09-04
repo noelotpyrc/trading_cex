@@ -1,8 +1,8 @@
 """
-Process stored lookback PKLs and compute features using core functions (excluding get_lags).
+Process stored lookback PKLs and compute features using multi_timeframe_features (excluding get_lags).
 
 Usage:
-  python process_lookbacks.py \
+  python feature_engineering/build_multi_timeframe_features.py \
     --dataset 'BINANCE_BTCUSDT.P, 60' \
     --base-dir '/Volumes/Extreme SSD/trading_data/cex/lookbacks' \
     --timeframes 1H 4H 12H 1D \
@@ -23,7 +23,7 @@ import numpy as np
 
 # Import core functions
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from core_functions import (
+from feature_engineering.multi_timeframe_features import (
     calculate_price_differences,
     calculate_log_transform,
     calculate_percentage_changes,
