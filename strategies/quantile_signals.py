@@ -209,3 +209,45 @@ def add_basic_signals(
     return out
 
 
+def add_prob_exp_q50_indicator(
+    signals_df: pd.DataFrame,
+    original_df: pd.DataFrame,
+    tau_long: float = 0.55,
+    tau_short: float = 0.45,
+    exp_col: str = "exp_ret_avg",
+    out_col: str = "signal_prob_exp_q50",
+) -> pd.DataFrame:
+    """Add a -1/0/1 indicator based on prob_up, expected return, and original pred_q50.
+
+    Long rule:  prob_up >= tau_long and exp_col > pred_q50_orig > 0  →  +1
+    Short rule: prob_up <  tau_short and exp_col < pred_q50_orig < 0  →  -1
+    Else 0.
+    """
+    if "prob_up" not in signals_df.columns:
+        raise KeyError("signals_df must contain 'prob_up'")
+    if exp_col not in signals_df.columns:
+        raise KeyError(f"signals_df must contain '{exp_col}'")
+    if "pred_q50" not in original_df.columns:
+        raise KeyError("original_df must contain 'pred_q50'")
+
+    merged = signals_df.copy()
+    if "timestamp" in signals_df.columns and "timestamp" in original_df.columns:
+        q50_map = original_df[["timestamp", "pred_q50"]].rename(columns={"pred_q50": "pred_q50_orig"})
+        merged = merged.merge(q50_map, on="timestamp", how="left")
+    else:
+        # Fallback: align by row order
+        merged["pred_q50_orig"] = original_df["pred_q50"].values[: len(merged)]
+
+    prob = pd.to_numeric(merged["prob_up"], errors="coerce")
+    expv = pd.to_numeric(merged[exp_col], errors="coerce")
+    q50o = pd.to_numeric(merged["pred_q50_orig"], errors="coerce")
+
+    cond_long = (prob >= float(tau_long)) & (expv > q50o) & (q50o > 0.0)
+    cond_short = (prob < float(tau_short)) & (expv < q50o) & (q50o < 0.0)
+    indicator = np.where(cond_long, 1, np.where(cond_short, -1, 0)).astype(int)
+
+    out = merged.copy()
+    out[out_col] = indicator
+    return out
+
+

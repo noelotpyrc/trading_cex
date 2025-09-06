@@ -11,6 +11,12 @@ Usage:
     --prob-thresholds 0.55 0.45 \
     --out /abs/merged/pred_val_signals.csv
 
+Minimal expected-returns only output (handy for MFE/MAE targets):
+  python model/compute_signals_from_quantiles.py \
+    --pred-csv /abs/merged/pred_val.csv \
+    --exp-only \
+    --out /abs/merged/pred_val_exp.csv
+
 This will read the merged predictions (with columns timestamp,y_true,pred_q05..q95),
 compute metrics and optional threshold-based signals, and write an augmented CSV.
 """
@@ -55,6 +61,7 @@ def main() -> None:
     parser.add_argument("--threshold-csvs", type=Path, nargs="*", help="Optional list of CSVs (e.g., merged train and val) for static thresholds over the union")
     parser.add_argument("--prob-thresholds", type=float, nargs=2, metavar=("TAU_LONG", "TAU_SHORT"), default=(0.55, 0.45), help="Probability thresholds for long/short")
     parser.add_argument("--out", type=Path, required=False, help="Output CSV path; defaults to <pred>_signals.csv")
+    parser.add_argument("--exp-only", action="store_true", help="Only compute expected returns and write minimal columns")
     args = parser.parse_args()
 
     pred_csv: Path = args.pred_csv.resolve()
@@ -80,6 +87,21 @@ def main() -> None:
         thr_q10 = float(th.get("pred_q10@0.1000", float("nan")))
         if pd.notna(thr_q90) and pd.notna(thr_q10):
             quantile_thresholds = (thr_q90, thr_q10)
+
+    # If only expected returns are requested, emit a minimal CSV and exit
+    if args.exp_only:
+        cols_to_keep: list[str] = []
+        if "timestamp" in df_metrics.columns:
+            cols_to_keep.append("timestamp")
+        for c in ["exp_ret_avg", "exp_ret_conservative"]:
+            if c in df_metrics.columns:
+                cols_to_keep.append(c)
+        if not cols_to_keep:
+            raise RuntimeError("No expected return columns found to write.")
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        df_metrics[cols_to_keep].to_csv(out_csv, index=False)
+        print(f"Wrote expected returns: {out_csv}")
+        return
 
     # Add basic signals
     df_signals = add_basic_signals(

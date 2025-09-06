@@ -1,7 +1,7 @@
 import argparse
 import re
 from pathlib import Path
-from typing import Tuple, List
+from typing import Tuple, List, Optional, Set
 
 import pandas as pd
 from plotly.subplots import make_subplots
@@ -18,7 +18,14 @@ def _load_pred(path: Path) -> pd.DataFrame:
     return df
 
 
-def _make_traces(df: pd.DataFrame, name_prefix: str) -> Tuple[List[go.Scatter], bool]:
+def _make_traces(
+    df: pd.DataFrame,
+    name_prefix: str,
+    visible_quantiles: Optional[Set[int]] = None,
+    include_y_true: bool = True,
+    line_dash: Optional[str] = None,
+    color_by_quantile: bool = False,
+) -> Tuple[List[go.Scatter], bool]:
     x = df['timestamp']
     traces: List[go.Scatter] = []
 
@@ -30,6 +37,10 @@ def _make_traces(df: pd.DataFrame, name_prefix: str) -> Tuple[List[go.Scatter], 
             q = int(m.group(1))
             q_cols[q] = c
 
+    # Optionally filter which quantiles to show (e.g., only lower or only upper side)
+    if visible_quantiles is not None:
+        q_cols = {q: c for q, c in q_cols.items() if q in visible_quantiles}
+
     # Prepare symmetric bands (outer to inner)
     band_colors = {
         95: ('#d62728', 'rgba(214,39,40,0.12)'),   # red
@@ -37,37 +48,46 @@ def _make_traces(df: pd.DataFrame, name_prefix: str) -> Tuple[List[go.Scatter], 
         85: ('#17becf', 'rgba(23,190,207,0.12)'),  # teal
         75: ('#ff7f0e', 'rgba(255,127,14,0.15)'),  # orange
     }
+    # Build a color map for individual quantiles so that lower-side shares the same color as its upper pair
+    quantile_color_map: dict[int, str] = {
+        95: band_colors[95][0], 5: band_colors[95][0],
+        90: band_colors[90][0], 10: band_colors[90][0],
+        85: band_colors[85][0], 15: band_colors[85][0],
+        75: band_colors[75][0], 25: band_colors[75][0],
+        50: 'green',
+    }
 
     added_any_band = False
     plotted_cols: set[str] = set()
-    for upper in [95, 90, 85, 75]:
-        lower = 100 - upper
-        if upper in q_cols and lower in q_cols:
-            ucol = q_cols[upper]
-            lcol = q_cols[lower]
-            ucolor, fillcolor = band_colors.get(upper, ('#999999', 'rgba(153,153,153,0.12)'))
-            # Upper line
-            traces.append(
-                go.Scatter(
-                    x=x, y=df[ucol], name=f'{name_prefix} {ucol}',
-                    line=dict(color=ucolor, width=1),
-                    mode='lines',
-                    hovertemplate='%{x}<br>'+ucol+'=%{y:.6f}<extra></extra>'
+    if visible_quantiles is None:
+        for upper in [95, 90, 85, 75]:
+            lower = 100 - upper
+            if upper in q_cols and lower in q_cols:
+                ucol = q_cols[upper]
+                lcol = q_cols[lower]
+                ucolor, fillcolor = band_colors.get(upper, ('#999999', 'rgba(153,153,153,0.12)'))
+                # Upper line
+                traces.append(
+                    go.Scatter(
+                        x=x, y=df[ucol], name=f'{name_prefix} {ucol}',
+                        line=dict(color=ucolor, width=1),
+                        mode='lines',
+                        hovertemplate='%{x}<br>'+ucol+'=%{y:.6f}<extra></extra>'
+                    )
                 )
-            )
-            # Lower line with fill to create band
-            traces.append(
-                go.Scatter(
-                    x=x, y=df[lcol], name=f'{name_prefix} {lcol}',
-                    line=dict(color=ucolor, width=1),
-                    mode='lines',
-                    fill='tonexty', fillcolor=fillcolor,
-                    hovertemplate='%{x}<br>'+lcol+'=%{y:.6f}<extra></extra>'
+                # Lower line with fill to create band
+                traces.append(
+                    go.Scatter(
+                        x=x, y=df[lcol], name=f'{name_prefix} {lcol}',
+                        line=dict(color=ucolor, width=1),
+                        mode='lines',
+                        fill='tonexty', fillcolor=fillcolor,
+                        hovertemplate='%{x}<br>'+lcol+'=%{y:.6f}<extra></extra>'
+                    )
                 )
-            )
-            added_any_band = True
-            plotted_cols.add(ucol)
-            plotted_cols.add(lcol)
+                added_any_band = True
+                plotted_cols.add(ucol)
+                plotted_cols.add(lcol)
 
     # Median (q50) as center line if available
     if 50 in q_cols:
@@ -86,11 +106,11 @@ def _make_traces(df: pd.DataFrame, name_prefix: str) -> Tuple[List[go.Scatter], 
         col = q_cols[q]
         if col in plotted_cols:
             continue
-        color = '#1f77b4' if q < 50 else '#d62728'
+        color = quantile_color_map.get(q, ('#1f77b4' if q < 50 else '#d62728')) if color_by_quantile else ('#1f77b4' if q < 50 else '#d62728')
         traces.append(
             go.Scatter(
                 x=x, y=df[col], name=f'{name_prefix} {col}',
-                line=dict(color=color, width=1, dash='dot'),
+                line=dict(color=color, width=1, dash=(line_dash or 'solid')),
                 mode='lines',
                 hovertemplate='%{x}<br>'+col+'=%{y:.6f}<extra></extra>'
             )
@@ -109,15 +129,16 @@ def _make_traces(df: pd.DataFrame, name_prefix: str) -> Tuple[List[go.Scatter], 
         )
 
     # Target (original values)
-    y_true = df['y_true']
-    traces.append(
-        go.Scatter(
-            x=x, y=y_true, name=f'{name_prefix} y_true',
-            line=dict(color='black', width=1.2),
-            mode='lines',
-            hovertemplate='%{x}<br>y=%{y:.6f}<extra></extra>'
+    if include_y_true and 'y_true' in df.columns:
+        y_true = df['y_true']
+        traces.append(
+            go.Scatter(
+                x=x, y=y_true, name=f'{name_prefix} y_true',
+                line=dict(color='black', width=1.2, dash=(line_dash or 'solid')),
+                mode='lines',
+                hovertemplate='%{x}<br>y=%{y:.6f}<extra></extra>'
+            )
         )
-    )
 
     return traces, added_any_band
 
@@ -153,7 +174,7 @@ def _subset_ohlcv_for_window(ohlcv: pd.DataFrame, start_ts, end_ts) -> pd.DataFr
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='Interactive plot of quantile predictions vs target (val/test) with OHLCV candlesticks. Optionally overlay expected return from signals CSVs.')
-    parser.add_argument('--run-dir', type=Path, required=True, help='Path to model run directory with pred_val.csv and pred_test.csv')
+    parser.add_argument('--run-dir', type=Path, required=False, help='Path to model run directory with pred_val.csv and pred_test.csv')
     parser.add_argument('--prefix', type=str, default='quantile_preds_interactive', help='Output filename prefix (will create <prefix>_val.html and <prefix>_test.html)')
     parser.add_argument('--ohlcv-csv', type=Path, default=Path('data/BINANCE_BTCUSDT.P, 60.csv'), help='Path to original OHLCV CSV (with time/timestamp, open, high, low, close)')
     parser.add_argument('--signals-val', type=Path, required=False, help='Optional path to signals CSV for validation (e.g., pred_val_signals.csv)')
@@ -162,19 +183,183 @@ def main() -> None:
     parser.add_argument('--mark-cross-violations', action='store_true', help='Mark points where cross_violations > 0 on expected return line')
     parser.add_argument('--show-prob-up', action='store_true', help='Overlay probability of positive return (prob_up) on a secondary y-axis')
     parser.add_argument('--prob-thresholds', type=float, nargs=2, metavar=('TAU_LONG', 'TAU_SHORT'), default=None, help='Optional probability thresholds to draw as reference lines when showing prob_up')
+
+    # Combined MFE/MAE overlays
+    parser.add_argument('--run-dir-mfe', type=Path, required=False, help='Run directory for MFE target with pred_val.csv and pred_test.csv')
+    parser.add_argument('--run-dir-mae', type=Path, required=False, help='Run directory for MAE target with pred_val.csv and pred_test.csv')
+    parser.add_argument('--signals-val-mfe', type=Path, required=False, help='Signals CSV for MFE validation (e.g., pred_val_exp.csv or *_signals.csv)')
+    parser.add_argument('--signals-test-mfe', type=Path, required=False, help='Signals CSV for MFE test (e.g., pred_test_exp.csv or *_signals.csv)')
+    parser.add_argument('--signals-val-mae', type=Path, required=False, help='Signals CSV for MAE validation')
+    parser.add_argument('--signals-test-mae', type=Path, required=False, help='Signals CSV for MAE test')
+    parser.add_argument('--combine-prefix', type=str, default='quantile_preds_interactive_combined', help='Output filename prefix for combined MFE/MAE (<prefix>_val.html and <prefix>_test.html)')
     args = parser.parse_args()
 
+    method_col = 'exp_ret_avg' if args.expected_method == 'avg' else 'exp_ret_conservative'
+    ohlcv_df = _load_ohlcv(args.ohlcv_csv)
+
+    # If both MFE and MAE run dirs are provided, create combined figures
+    if args.run_dir_mfe and args.run_dir_mae:
+        run_dir_mfe: Path = args.run_dir_mfe
+        run_dir_mae: Path = args.run_dir_mae
+
+        val_mfe_df = _load_pred(run_dir_mfe / 'pred_val.csv')
+        test_mfe_df = _load_pred(run_dir_mfe / 'pred_test.csv')
+        val_mae_df = _load_pred(run_dir_mae / 'pred_val.csv')
+        test_mae_df = _load_pred(run_dir_mae / 'pred_test.csv')
+
+        sig_val_mfe: Optional[pd.DataFrame] = None
+        sig_test_mfe: Optional[pd.DataFrame] = None
+        sig_val_mae: Optional[pd.DataFrame] = None
+        sig_test_mae: Optional[pd.DataFrame] = None
+        if args.signals_val_mfe and args.signals_val_mfe.exists():
+            sig_val_mfe = _load_pred(args.signals_val_mfe)
+        if args.signals_test_mfe and args.signals_test_mfe.exists():
+            sig_test_mfe = _load_pred(args.signals_test_mfe)
+        if args.signals_val_mae and args.signals_val_mae.exists():
+            sig_val_mae = _load_pred(args.signals_val_mae)
+        if args.signals_test_mae and args.signals_test_mae.exists():
+            sig_test_mae = _load_pred(args.signals_test_mae)
+
+        # Validation combined figure
+        val_fig = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.07,
+            row_heights=[0.65, 0.35],
+            specs=[[{"secondary_y": False}], [{}]],
+        )
+        # MFE: only upper-side quantiles (75, 85, 90, 95) with solid lines and consistent colors
+        mfe_traces, _ = _make_traces(
+            val_mfe_df, 'MFE', visible_quantiles={75, 85, 90, 95}, include_y_true=True, line_dash='solid', color_by_quantile=True
+        )
+        for tr in mfe_traces:
+            val_fig.add_trace(tr, row=1, col=1)
+        # MAE: only lower-side quantiles (05, 10, 15, 25) with dashed lines and consistent colors
+        mae_traces, _ = _make_traces(
+            val_mae_df, 'MAE', visible_quantiles={5, 10, 15, 25}, include_y_true=True, line_dash='dash', color_by_quantile=True
+        )
+        for tr in mae_traces:
+            val_fig.add_trace(tr, row=1, col=1)
+        # Two y_true lines already included via include_y_true=True with respective dashes
+        # Expected returns overlays
+        if sig_val_mfe is not None and method_col in sig_val_mfe.columns:
+            val_fig.add_trace(
+                go.Scatter(
+                    x=sig_val_mfe['timestamp'], y=sig_val_mfe[method_col], name=f'MFE {method_col}',
+                    line=dict(color='#bcbd22', width=2, dash='solid'), mode='lines',
+                    hovertemplate='%{x}<br>'+method_col+'=%{y:.6f}<extra></extra>'
+                ),
+                row=1, col=1,
+            )
+        if sig_val_mae is not None and method_col in sig_val_mae.columns:
+            val_fig.add_trace(
+                go.Scatter(
+                    x=sig_val_mae['timestamp'], y=sig_val_mae[method_col], name=f'MAE {method_col}',
+                    line=dict(color='#bcbd22', width=2, dash='dash'), mode='lines',
+                    hovertemplate='%{x}<br>'+method_col+'=%{y:.6f}<extra></extra>'
+                ),
+                row=1, col=1,
+            )
+
+        # Candlestick under predictions
+        val_start, val_end = val_mfe_df['timestamp'].min(), val_mfe_df['timestamp'].max()
+        val_ohlcv = _subset_ohlcv_for_window(ohlcv_df, val_start, val_end)
+        if not val_ohlcv.empty:
+            val_fig.add_trace(
+                go.Candlestick(
+                    x=val_ohlcv['timestamp'],
+                    open=val_ohlcv['open'], high=val_ohlcv['high'], low=val_ohlcv['low'], close=val_ohlcv['close'],
+                    showlegend=False,
+                    increasing_line_color='green', decreasing_line_color='red',
+                ),
+                row=2, col=1,
+            )
+        val_fig.update_layout(
+            title='Validation: MFE (upper quantiles) and MAE (lower quantiles) vs target',
+            template='plotly_white',
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1.0),
+            hovermode='x unified',
+        )
+        val_fig.update_yaxes(title_text='y / preds', row=1, col=1)
+        val_fig.update_yaxes(title_text='price (OHLC)', row=2, col=1)
+        val_fig.update_xaxes(title_text='timestamp', row=2, col=1, rangeslider=dict(visible=True))
+        out_val = (run_dir_mfe / f"{args.combine_prefix}_val.html")
+        val_fig.write_html(out_val)
+
+        # Test combined figure
+        test_fig = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.07,
+            row_heights=[0.65, 0.35],
+            specs=[[{"secondary_y": False}], [{}]],
+        )
+        mfe_traces_t, _ = _make_traces(test_mfe_df, 'MFE', visible_quantiles={75, 85, 90, 95}, include_y_true=True, line_dash='solid', color_by_quantile=True)
+        for tr in mfe_traces_t:
+            test_fig.add_trace(tr, row=1, col=1)
+        mae_traces_t, _ = _make_traces(test_mae_df, 'MAE', visible_quantiles={5, 10, 15, 25}, include_y_true=True, line_dash='dash', color_by_quantile=True)
+        for tr in mae_traces_t:
+            test_fig.add_trace(tr, row=1, col=1)
+        # Two y_true lines already included via include_y_true=True
+        if sig_test_mfe is not None and method_col in sig_test_mfe.columns:
+            test_fig.add_trace(
+                go.Scatter(
+                    x=sig_test_mfe['timestamp'], y=sig_test_mfe[method_col], name=f'MFE {method_col}',
+                    line=dict(color='#bcbd22', width=2, dash='solid'), mode='lines',
+                    hovertemplate='%{x}<br>'+method_col+'=%{y:.6f}<extra></extra>'
+                ),
+                row=1, col=1,
+            )
+        if sig_test_mae is not None and method_col in sig_test_mae.columns:
+            test_fig.add_trace(
+                go.Scatter(
+                    x=sig_test_mae['timestamp'], y=sig_test_mae[method_col], name=f'MAE {method_col}',
+                    line=dict(color='#bcbd22', width=2, dash='dash'), mode='lines',
+                    hovertemplate='%{x}<br>'+method_col+'=%{y:.6f}<extra></extra>'
+                ),
+                row=1, col=1,
+            )
+        test_start, test_end = test_mfe_df['timestamp'].min(), test_mfe_df['timestamp'].max()
+        test_ohlcv = _subset_ohlcv_for_window(ohlcv_df, test_start, test_end)
+        if not test_ohlcv.empty:
+            test_fig.add_trace(
+                go.Candlestick(
+                    x=test_ohlcv['timestamp'],
+                    open=test_ohlcv['open'], high=test_ohlcv['high'], low=test_ohlcv['low'], close=test_ohlcv['close'],
+                    showlegend=False,
+                    increasing_line_color='green', decreasing_line_color='red',
+                ),
+                row=2, col=1,
+            )
+        test_fig.update_layout(
+            title='Test: MFE (upper quantiles) and MAE (lower quantiles) vs target',
+            template='plotly_white',
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1.0),
+            hovermode='x unified',
+        )
+        test_fig.update_yaxes(title_text='y / preds', row=1, col=1)
+        test_fig.update_yaxes(title_text='price (OHLC)', row=2, col=1)
+        test_fig.update_xaxes(title_text='timestamp', row=2, col=1, rangeslider=dict(visible=True))
+        out_test = (run_dir_mfe / f"{args.combine_prefix}_test.html")
+        test_fig.write_html(out_test)
+
+        print(f'Wrote combined interactive plots: {out_val} and {out_test}')
+        return
+
+    # Default single-run behavior (backward compatible)
+    if not args.run_dir:
+        raise ValueError('--run-dir is required when not using --run-dir-mfe/--run-dir-mae')
     run_dir: Path = args.run_dir
     val_df = _load_pred(run_dir / 'pred_val.csv')
     test_df = _load_pred(run_dir / 'pred_test.csv')
-    sig_val_df: pd.DataFrame | None = None
-    sig_test_df: pd.DataFrame | None = None
-    method_col = 'exp_ret_avg' if args.expected_method == 'avg' else 'exp_ret_conservative'
+    sig_val_df: Optional[pd.DataFrame] = None
+    sig_test_df: Optional[pd.DataFrame] = None
     if args.signals_val and args.signals_val.exists():
         sig_val_df = _load_pred(args.signals_val)
     if args.signals_test and args.signals_test.exists():
         sig_test_df = _load_pred(args.signals_test)
-    ohlcv_df = _load_ohlcv(args.ohlcv_csv)
 
     # Validation figure with candlestick subplot (secondary y on row 1 for prob_up)
     val_fig = make_subplots(
