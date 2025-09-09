@@ -5,11 +5,11 @@ signals from merged quantile prediction CSVs.
 
 Usage:
   python model/compute_signals_from_quantiles.py \
-    --pred-csv /abs/merged/pred_val.csv \
-    --method avg \
-    --threshold-csvs /abs/merged_train/pred_train.csv /abs/merged_val/pred_val.csv \
-    --prob-thresholds 0.55 0.45 \
-    --out /abs/merged/pred_val_signals.csv
+    --pred-csv "/Volumes/Extreme SSD/trading_data/cex/models/BINANCE_BTCUSDT.P, 60/diagnosis/y_logret_168h/pred_test.csv" 
+    --method avg 
+    --threshold-csvs "/Volumes/Extreme SSD/trading_data/cex/models/BINANCE_BTCUSDT.P, 60/diagnosis/y_logret_168h/pred_train.csv" "/Volumes/Extreme SSD/trading_data/cex/models/BINANCE_BTCUSDT.P, 60/diagnosis/y_logret_168h/pred_val.csv" 
+    --prob-thresholds 0.55 0.45 
+    --out "/Volumes/Extreme SSD/trading_data/cex/models/BINANCE_BTCUSDT.P, 60/diagnosis/y_logret_168h/pred_test_signals.csv"
 
 Minimal expected-returns only output (handy for MFE/MAE targets):
   python model/compute_signals_from_quantiles.py \

@@ -168,8 +168,11 @@ def _load_ohlcv(path: Path) -> pd.DataFrame:
 
 
 def _subset_ohlcv_for_window(ohlcv: pd.DataFrame, start_ts, end_ts) -> pd.DataFrame:
+    # Backward-compatible default without shift
     mask = (ohlcv['timestamp'] >= start_ts) & (ohlcv['timestamp'] <= end_ts)
-    return ohlcv.loc[mask]
+    out = ohlcv.loc[mask].copy()
+    out['timestamp_plot'] = out['timestamp']
+    return out
 
 
 def main() -> None:
@@ -183,6 +186,8 @@ def main() -> None:
     parser.add_argument('--mark-cross-violations', action='store_true', help='Mark points where cross_violations > 0 on expected return line')
     parser.add_argument('--show-prob-up', action='store_true', help='Overlay probability of positive return (prob_up) on a secondary y-axis')
     parser.add_argument('--prob-thresholds', type=float, nargs=2, metavar=('TAU_LONG', 'TAU_SHORT'), default=None, help='Optional probability thresholds to draw as reference lines when showing prob_up')
+    parser.add_argument('--ohlcv-shift-hours', type=float, default=0.0, help='Shift OHLCV forward by N hours relative to prediction timestamps (e.g., 24 to visualize the future horizon).')
+    parser.add_argument('--ohlcv-align-mode', choices=['overlay', 'future'], default='overlay', help="overlay: plot future OHLC at the same x as predictions (aligned to entry bar); future: plot OHLC at future timestamps (x shifted right).")
 
     # Combined MFE/MAE overlays
     parser.add_argument('--run-dir-mfe', type=Path, required=False, help='Run directory for MFE target with pred_val.csv and pred_test.csv')
@@ -262,13 +267,21 @@ def main() -> None:
                 row=1, col=1,
             )
 
-        # Candlestick under predictions
+        # Candlestick under predictions (supports future alignment via shift)
         val_start, val_end = val_mfe_df['timestamp'].min(), val_mfe_df['timestamp'].max()
-        val_ohlcv = _subset_ohlcv_for_window(ohlcv_df, val_start, val_end)
+        if float(args.ohlcv_shift_hours or 0.0) != 0.0:
+            delta = pd.to_timedelta(float(args.ohlcv_shift_hours), unit='h')
+            val_ohlcv = _subset_ohlcv_for_window(ohlcv_df, val_start + delta, val_end + delta)
+            if args.ohlcv_align_mode == 'overlay':
+                val_ohlcv['timestamp_plot'] = val_ohlcv['timestamp'] - delta
+            else:
+                val_ohlcv['timestamp_plot'] = val_ohlcv['timestamp']
+        else:
+            val_ohlcv = _subset_ohlcv_for_window(ohlcv_df, val_start, val_end)
         if not val_ohlcv.empty:
             val_fig.add_trace(
                 go.Candlestick(
-                    x=val_ohlcv['timestamp'],
+                    x=val_ohlcv['timestamp_plot'],
                     open=val_ohlcv['open'], high=val_ohlcv['high'], low=val_ohlcv['low'], close=val_ohlcv['close'],
                     showlegend=False,
                     increasing_line_color='green', decreasing_line_color='red',
@@ -322,11 +335,19 @@ def main() -> None:
                 row=1, col=1,
             )
         test_start, test_end = test_mfe_df['timestamp'].min(), test_mfe_df['timestamp'].max()
-        test_ohlcv = _subset_ohlcv_for_window(ohlcv_df, test_start, test_end)
+        if float(args.ohlcv_shift_hours or 0.0) != 0.0:
+            delta = pd.to_timedelta(float(args.ohlcv_shift_hours), unit='h')
+            test_ohlcv = _subset_ohlcv_for_window(ohlcv_df, test_start + delta, test_end + delta)
+            if args.ohlcv_align_mode == 'overlay':
+                test_ohlcv['timestamp_plot'] = test_ohlcv['timestamp'] - delta
+            else:
+                test_ohlcv['timestamp_plot'] = test_ohlcv['timestamp']
+        else:
+            test_ohlcv = _subset_ohlcv_for_window(ohlcv_df, test_start, test_end)
         if not test_ohlcv.empty:
             test_fig.add_trace(
                 go.Candlestick(
-                    x=test_ohlcv['timestamp'],
+                    x=test_ohlcv['timestamp_plot'],
                     open=test_ohlcv['open'], high=test_ohlcv['high'], low=test_ohlcv['low'], close=test_ohlcv['close'],
                     showlegend=False,
                     increasing_line_color='green', decreasing_line_color='red',
@@ -426,11 +447,23 @@ def main() -> None:
                 )
     # Candlestick under predictions
     val_start, val_end = val_df['timestamp'].min(), val_df['timestamp'].max()
-    val_ohlcv = _subset_ohlcv_for_window(ohlcv_df, val_start, val_end)
+    # Optionally shift OHLCV window forward for visualization
+    if float(args.ohlcv_shift_hours or 0.0) != 0.0:
+        delta = pd.to_timedelta(float(args.ohlcv_shift_hours), unit='h')
+        val_ohlcv = _subset_ohlcv_for_window(ohlcv_df, val_start + delta, val_end + delta)
+        # Align mode handling
+        if args.ohlcv_align_mode == 'overlay':
+            # Plot future OHLC at the current x positions (align to entry bar)
+            val_ohlcv['timestamp_plot'] = val_ohlcv['timestamp'] - delta
+        else:
+            # Keep future timestamps on x-axis (visible shift right)
+            val_ohlcv['timestamp_plot'] = val_ohlcv['timestamp']
+    else:
+        val_ohlcv = _subset_ohlcv_for_window(ohlcv_df, val_start, val_end)
     if not val_ohlcv.empty:
         val_fig.add_trace(
             go.Candlestick(
-                x=val_ohlcv['timestamp'],
+                x=val_ohlcv['timestamp_plot'],
                 open=val_ohlcv['open'], high=val_ohlcv['high'], low=val_ohlcv['low'], close=val_ohlcv['close'],
                 showlegend=False,
                 increasing_line_color='green', decreasing_line_color='red',
@@ -512,11 +545,19 @@ def main() -> None:
                     row=1, col=1, secondary_y=True,
                 )
     test_start, test_end = test_df['timestamp'].min(), test_df['timestamp'].max()
-    test_ohlcv = _subset_ohlcv_for_window(ohlcv_df, test_start, test_end)
+    if float(args.ohlcv_shift_hours or 0.0) != 0.0:
+        delta = pd.to_timedelta(float(args.ohlcv_shift_hours), unit='h')
+        test_ohlcv = _subset_ohlcv_for_window(ohlcv_df, test_start + delta, test_end + delta)
+        if args.ohlcv_align_mode == 'overlay':
+            test_ohlcv['timestamp_plot'] = test_ohlcv['timestamp'] - delta
+        else:
+            test_ohlcv['timestamp_plot'] = test_ohlcv['timestamp']
+    else:
+        test_ohlcv = _subset_ohlcv_for_window(ohlcv_df, test_start, test_end)
     if not test_ohlcv.empty:
         test_fig.add_trace(
             go.Candlestick(
-                x=test_ohlcv['timestamp'],
+                x=test_ohlcv['timestamp_plot'],
                 open=test_ohlcv['open'], high=test_ohlcv['high'], low=test_ohlcv['low'], close=test_ohlcv['close'],
                 showlegend=False,
                 increasing_line_color='green', decreasing_line_color='red',
