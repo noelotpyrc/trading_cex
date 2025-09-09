@@ -9,10 +9,7 @@
   
   "target": {
     "variable": "y_logret_24h",
-    "objective": {
-      "type": "quantiles",
-      "quantiles": [0.05]
-    }
+    "objective": { "name": "quantile", "params": { "alpha": 0.05 } }
   },
   
   "split": {
