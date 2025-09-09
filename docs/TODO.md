@@ -18,6 +18,7 @@
 
 1. Come up with crucial stats for target EDA
 2. More detailed model inspection, e.g., combined feature importance, etc.
+3. Regime detection methods.
 
 # Strategy task
 
