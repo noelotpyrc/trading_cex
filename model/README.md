@@ -65,7 +65,7 @@ Merge multiple quantile runs’ predictions into a single file for plotting. Eit
   --target y_logret_24h \
   --input-data "/Volumes/Extreme SSD/trading_data/cex/training/BINANCE_BTCUSDT.P, 60/merged_features_targets.csv" \
   --split val \
-  --out-dir "/Volumes/Extreme SSD/trading_data/cex/models/BINANCE_BTCUSDT.P, 60/merged_quantiles"
+  --out-dir "/Volumes/Extreme SSD/trading_data/cex/models/BINANCE_BTCUSDT.P, 60/diagnosis/"
 ```
 
 Writes `pred_<split>.csv` with columns: `timestamp` (if present), `y_true`, `pred_q05`, `pred_q10`, …
@@ -76,7 +76,7 @@ Val/test plots with candlesticks and optional signals overlays:
 
 ```bash
 /Users/noel/projects/trading_cex/venv/bin/python model/plot_predictions_interactive.py \
-  --run-dir "/Volumes/Extreme SSD/trading_data/cex/models/BINANCE_BTCUSDT.P, 60/run_20250901_120000_lgbm_y_logret_24h_quantile" \
+  --run-dir "/Volumes/Extreme SSD/trading_data/cex/models/BINANCE_BTCUSDT.P, 60/diagnosis/y_logret_120h" \
   --ohlcv-csv "/Users/noel/projects/trading_cex/data/BINANCE_BTCUSDT.P, 60.csv"
 ```
 
