@@ -16,6 +16,7 @@ import argparse
 import json
 import csv
 import logging
+import sys
 from datetime import datetime
 from itertools import product
 from pathlib import Path
@@ -29,15 +30,47 @@ from sklearn.model_selection import TimeSeriesSplit
 
 
 def setup_logging(log_level: str = "INFO") -> None:
-    """Setup logging configuration."""
+    """Setup logging configuration.
+
+    By default, writes logs to stdout and to a file under
+    /Volumes/Extreme SSD/trading_data/cex/logs/pipeline_{timestamp}.log.
+    If that location is unavailable, falls back to the current working directory.
+    """
+    # Determine log directory (create if needed), with graceful fallback
+    default_dir = Path('/Volumes/Extreme SSD/trading_data/cex/logs')
+    try:
+        default_dir.mkdir(parents=True, exist_ok=True)
+        log_dir = default_dir
+    except Exception:
+        log_dir = Path.cwd()
+    log_file = log_dir / f'pipeline_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(f'pipeline_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+            logging.StreamHandler(stream=sys.stdout),
+            logging.FileHandler(str(log_file))
         ]
     )
+
+
+def _ensure_logging_initialized(default_level: str = "INFO") -> None:
+    """Ensure logging outputs to stdout at INFO level for programmatic runs."""
+    root_logger = logging.getLogger()
+    desired_level = getattr(logging, default_level.upper(), logging.INFO)
+    root_logger.setLevel(desired_level)
+    has_stdout_handler = False
+    for h in root_logger.handlers:
+        if isinstance(h, logging.StreamHandler) and getattr(h, 'stream', None) is sys.stdout:
+            has_stdout_handler = True
+            if h.level > desired_level:
+                h.setLevel(desired_level)
+    if not has_stdout_handler:
+        sh = logging.StreamHandler(stream=sys.stdout)
+        sh.setLevel(desired_level)
+        sh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        root_logger.addHandler(sh)
 
 
 def load_config(config_path: Path) -> Dict[str, Any]:
@@ -179,6 +212,7 @@ def tune_hyperparameters(config: Dict[str, Any], data_dir: Path) -> Dict[str, An
     Returns:
         Dictionary of best hyperparameters
     """
+    _ensure_logging_initialized()
     logging.info("Starting hyperparameter tuning...")
     
     model_config = config['model']
@@ -366,6 +400,7 @@ def _fit_once(
     lgb_params = {
         'objective': objective_name,
         'metric': _default_metric_for_objective(objective_name),
+        'verbosity': -1,
         **params,
     }
     # Objective-specific additions
@@ -378,9 +413,12 @@ def _fit_once(
         num_boost_round=num_boost_round,
         valid_sets=[val_set],
         valid_names=['val'],
-        callbacks=[
-            lgb.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=True),
-            lgb.log_evaluation(period=200),
+        callbacks=(
+            [
+                lgb.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=True)
+            ] if (isinstance(early_stopping_rounds, int) and early_stopping_rounds > 0) else []
+        ) + [
+            lgb.log_evaluation(period=200)
         ],
     )
 
@@ -435,6 +473,7 @@ def _tune_grid_search(config: Dict[str, Any], data_dir: Path, search_space: Dict
     values_lists = [search_space[k] for k in keys]
     best_params = base_params.copy()
     best_score = float('inf')
+    best_iter_for_best = None
     primary = _primary_metric_for_objective(objective_name, config['model'].get('eval_metrics'))
 
     # Prepare full training dataset once for lgb.cv
@@ -454,6 +493,7 @@ def _tune_grid_search(config: Dict[str, Any], data_dir: Path, search_space: Dict
         lgb_params = {
             'objective': objective_name,
             'metric': lgb_metric,
+            'verbosity': -1,
             **trial_params,
         }
         if objective_name == 'quantile':
@@ -463,7 +503,7 @@ def _tune_grid_search(config: Dict[str, Any], data_dir: Path, search_space: Dict
         logging.info(f"[grid] Trial {trial_idx} params: {json.dumps(trial_params, sort_keys=True)}")
         logging.info(f"[grid] Trial {trial_idx}: starting lgb.cv with num_boost_round={num_boost_round}, early_stopping_rounds={early_stopping_rounds}, folds={cv_cfg['n_folds']}")
         callbacks_list = [
-            lgb.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=True),
+            lgb.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=True, verbose=False),
         ]
         if int(cv_cfg.get('log_period', 0)) > 0:
             callbacks_list.append(lgb.log_evaluation(period=int(cv_cfg['log_period'])))
@@ -488,6 +528,10 @@ def _tune_grid_search(config: Dict[str, Any], data_dir: Path, search_space: Dict
         best_mean = float(cv_results[mean_key][best_iter_idx])
         best_stdv = float(cv_results.get(std_key, [np.nan] * (best_iter_idx + 1))[best_iter_idx])
         best_cv = best_mean
+        logging.info(
+            "[grid] Trial %d result: best_iter=%d, %s=%.6f (+/- %.6f) params=%s",
+            trial_idx, best_iter_idx + 1, primary, best_mean, best_stdv, json.dumps(trial_params, sort_keys=True)
+        )
         # Log this trial
         _append_tuning_log_row(log_csv, {
             'method': 'grid',
@@ -506,7 +550,14 @@ def _tune_grid_search(config: Dict[str, Any], data_dir: Path, search_space: Dict
         if best_cv < best_score:
             best_score = best_cv
             best_params = trial_params
+            # Propagate best iteration from CV to final training schedule
+            best_iter_for_best = int(best_iter_idx + 1)
 
+    # If we found a best CV iteration, fix final training to that number of rounds
+    if best_iter_for_best is not None:
+        best_params = best_params.copy()
+        best_params['num_boost_round'] = int(best_iter_for_best)
+        best_params['early_stopping_rounds'] = 0
     return best_params
 
 
@@ -561,6 +612,7 @@ def _tune_bayesian(config: Dict[str, Any], data_dir: Path, search_space: Dict[st
         lgb_params = {
             'objective': objective_name,
             'metric': lgb_metric,
+            'verbosity': -1,
             **trial_params,
         }
         if objective_name == 'quantile':
@@ -569,7 +621,7 @@ def _tune_bayesian(config: Dict[str, Any], data_dir: Path, search_space: Dict[st
         logging.info(f"[bayes] Trial {trial.number} params: {json.dumps(trial_params, sort_keys=True)}")
         logging.info(f"[bayes] Trial {trial.number}: starting lgb.cv with num_boost_round={num_boost_round}, early_stopping_rounds={early_stopping_rounds}, folds={cv_cfg['n_folds']}")
         callbacks_list = [
-            lgb.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=True),
+            lgb.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=True, verbose=False),
         ]
         if int(cv_cfg.get('log_period', 0)) > 0:
             callbacks_list.append(lgb.log_evaluation(period=int(cv_cfg['log_period'])))
@@ -604,12 +656,53 @@ def _tune_bayesian(config: Dict[str, Any], data_dir: Path, search_space: Dict[st
             'objective': objective_name,
             'params': trial_params,
         })
+        logging.info(
+            "[bayes] Trial %d result: best_iter=%d, %s=%.6f (+/- %.6f) params=%s",
+            trial.number, best_iter_idx + 1, primary, best_mean, best_stdv, json.dumps(trial_params, sort_keys=True)
+        )
         return best_mean
 
     study = optuna.create_study(direction='minimize')
     study.optimize(objective, n_trials=min(50, max(10, len(list(product(*values_lists))) // 2)))
     best_params = base_params.copy()
     best_params.update(study.best_params)
+
+    # Re-run CV once on best params to fetch best iteration, then propagate
+    lgb_params = {
+        'objective': objective_name,
+        'metric': lgb_metric,
+        'verbosity': -1,
+        **best_params,
+    }
+    if objective_name == 'quantile':
+        lgb_params['alpha'] = float(objective_params['alpha'])
+
+    callbacks_list = [
+        lgb.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=True, verbose=False),
+    ]
+    if int(cv_cfg.get('log_period', 0)) > 0:
+        callbacks_list.append(lgb.log_evaluation(period=int(cv_cfg['log_period'])))
+    cv_results = lgb.cv(
+        params=lgb_params,
+        train_set=lgb_dataset,
+        folds=folds,
+        num_boost_round=num_boost_round,
+        callbacks=callbacks_list,
+    )
+    mean_key = f"{lgb_metric}-mean"
+    if mean_key not in cv_results:
+        mean_keys = [k for k in cv_results.keys() if k.endswith('-mean')]
+        if mean_keys:
+            mean_key = mean_keys[0]
+    if mean_key in cv_results:
+        best_iter_idx = int(np.argmin(cv_results[mean_key]))
+        best_params['num_boost_round'] = int(best_iter_idx + 1)
+        best_params['early_stopping_rounds'] = 0
+        logging.info(
+            "[bayes] Best result summary: best_iter=%d with params=%s",
+            best_iter_idx + 1, json.dumps(best_params, sort_keys=True)
+        )
+
     return best_params
 
 
@@ -618,6 +711,7 @@ def _tune_bayesian(config: Dict[str, Any], data_dir: Path, search_space: Dict[st
 
 def train_model(config: Dict[str, Any], data_dir: Path, best_params: Dict[str, Any]) -> Tuple[lgb.Booster, Dict[str, float], Path]:
     """Train LightGBM model and return (booster, metrics, run_dir)."""
+    _ensure_logging_initialized()
     logging.info("Starting LightGBM model training...")
 
     target = config['target']['variable']
@@ -641,10 +735,29 @@ def train_model(config: Dict[str, Any], data_dir: Path, best_params: Dict[str, A
     num_boost_round = int(best_params.get('num_boost_round', config['model'].get('params', {}).get('num_boost_round', 1000)))
     early_stopping_rounds = int(best_params.get('early_stopping_rounds', config['model'].get('params', {}).get('early_stopping_rounds', 100)))
 
+    log_params = {**best_params}
+    log_params['num_boost_round'] = num_boost_round
+    log_params['early_stopping_rounds'] = early_stopping_rounds
+    logging.info(
+        "Final LightGBM training params (objective=%s, primary_metric=%s): %s",
+        objective_name,
+        _primary_metric_for_objective(objective_name, config['model'].get('eval_metrics')),
+        json.dumps(log_params, sort_keys=True),
+    )
+
     booster, _, preds = _fit_once(
         X_train, y_train, X_val, y_val,
         objective_name, objective_params,
         best_params, num_boost_round, early_stopping_rounds,
+    )
+
+    # Provide a concise training summary for visibility
+    logging.info(
+        "Training summary: rounds=%d, best_iteration=%s, features=%d, train_rows=%d, val_rows=%d, test_rows=%d",
+        num_boost_round,
+        getattr(booster, 'best_iteration', None),
+        len(X_train.columns),
+        len(X_train), len(X_val), len(X_test),
     )
 
     # Evaluate on all splits
@@ -689,7 +802,12 @@ def train_model(config: Dict[str, Any], data_dir: Path, best_params: Dict[str, A
     })
     fi_df.sort_values('importance_gain', ascending=False).to_csv(run_dir / 'feature_importance.csv', index=False)
 
-    logging.info(f"LightGBM training completed. Metrics: {metrics}")
+    logging.info(
+        "LightGBM training completed. %s_train=%.6f, %s_val=%.6f, %s_test=%.6f",
+        primary, metrics.get(f"{primary}_train", float('nan')),
+        primary, metrics.get(f"{primary}_val", float('nan')),
+        primary, metrics.get(f"{primary}_test", float('nan')),
+    )
     return booster, metrics, run_dir
 
 
@@ -733,8 +851,13 @@ def persist_results(config: Dict[str, Any], run_dir: Path, metrics: Dict[str, fl
     # Also persist individual convenience files
     with open(run_dir / 'pipeline_config.json', 'w') as f:
         json.dump(json.loads(json.dumps(config, default=str)), f, indent=2)
+    # Include schedule keys explicitly in saved best_params for readability
+    saved_best = best_params.copy()
+    # If training was run via train_model above, these have been used
+    saved_best.setdefault('num_boost_round', int(best_params.get('num_boost_round', 0)))
+    saved_best.setdefault('early_stopping_rounds', int(best_params.get('early_stopping_rounds', 0)))
     with open(run_dir / 'best_params.json', 'w') as f:
-        json.dump(best_params, f, indent=2)
+        json.dump(saved_best, f, indent=2)
     with open(run_dir / 'paths.json', 'w') as f:
         json.dump({
             'input_data': str(config['input_data']),
