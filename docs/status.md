@@ -5,6 +5,8 @@
 
 # Modeling
 
+Current modeling is based on 30 days lookback windows built for 1h, 4h, 12h and 1d timeframes, predicting a few different targets.
+
 1. Tried to fit different targets with diffferent objectives (quantiles, huber, regression, etc.)
 2. Forward 7 day log return prediction shows some promising results from simulation
 
