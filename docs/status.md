@@ -1,15 +1,13 @@
 # Engineering pipelines
 
 1. All data preparation, feature engineering and model training/diagnose pipelines are done
-2. Most of them are implemented as standalone run script, which limits the efficiency of trying different configs
+2. Model training (lgbm) can be set up with configs now
 
 # Modeling
 
-1. Two majore regression targets are used for model training, log return and MFE
-2. Two sets of features were used for model training, basic lags and combined features
-3. Both of the regression models have some underfitting issues for different target objectives or different hyper parameters
-4. Forward 7 day regression prediction shows some potential of trading strategy
+1. Tried to fit different targets with diffferent objectives (quantiles, huber, regression, etc.)
+2. Forward 7 day log return prediction shows some promising results from simulation
 
 # Strategy
 
-Zero progress
+Only tried a RSI based strategy, no other strategy set up yet.

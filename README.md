@@ -1,99 +1,52 @@
-# Crypto CEX Trading Strategy
+## Crypto CEX Trading Strategy
 
-Playing around simple trading strategies
+Research repo for feature engineering, ML forecasting of future log-returns, signal generation (quantiles and RSI), and backtesting/visualization on centralized exchanges (CEX). Works primarily with Binance/Coinbase OHLCV and multi-timeframe RSI features.
 
-## 🗂️ Project Structure
+### What you can do now
+
+- **Engineer features and targets**: Scripts under `feature_engineering/` build multi-timeframe features, lags, and supervised targets; tools to merge features/targets are included.
+- **Train and evaluate models**: Config-driven LightGBM pipeline in `model/` (`run_lgbm_pipeline.py`, `run_configs_batch.py`) with support for Huber/Quantile objectives, per-split artifacts, and diagnostics.
+- **Merge and plot quantile predictions**: `model/merge_quantile_predictions.py` combines runs; interactive plots via `model/plot_predictions_interactive.py` and `model/plot_predictions_interactive_train.py` with candlesticks and overlays.
+- **Generate trading signals**: Quantile-to-signal utilities in `strategies/` (`quantile_signals.py`, `compute_signals_from_quantiles.py`) and visual trade inspection in `strategies/plot_trades_candles.py`.
+- **Backtest heuristic RSI strategies**: JSON-configurable RSI strategies using Backtesting.py and Backtrader in `backtesting/` (`run_strategy_backtesting.py`, `run_strategy_backtrader.py`) with example configs in `backtesting/configs/`.
+- **EDA and utilities**: Exploratory analyses in `analysis/` and data helpers (e.g., Binance klines download/merge) in `utils/`.
+
+### Current status
+
+- **RSI strategies**: Implemented and backtested; interactive HTML reports saved under `results/`.
+- **Modeling pipeline**: Operational for several horizons (e.g., 24h/48h/120h/168h) with Huber/Quantile objectives; interactive diagnostics and prediction plots available.
+- **Signals**: Quantile-based signal flow implemented and under active tuning; integration with systematic backtests is ongoing.
+- **Data**: Sample OHLCV and multi-timeframe RSI CSVs included in `data/` to reproduce plots/backtests quickly.
+- **Docs**: See `docs/` for methodology and pipeline usage; documentation is evolving alongside experiments.
+
+### High-level layout
 
 ```
 trading_cex/
-├── strategies/           # Strategy implementations
-│   └── conservative_rsi_strategy.py
-├── data/                # Data files and processing
-│   ├── merged_*.csv     # Merged crypto datasets
-│   └── merge_crypto_data.py
-├── backtesting/         # Backtesting scripts
-│   ├── run_strategy.py  # Execute backtest
-│   ├── plot_strategy.py # Visualize results
-│   └── debug_strategy.py # Debug strategy logic
-├── analysis/            # Analysis and EDA scripts
-│   ├── rsi_analysis.py  # RSI distribution analysis
-│   ├── eda_analysis.py  # Exploratory data analysis
-│   └── timestamp_analysis.py # Time series analysis
-├── results/             # Backtest results and plots
-├── utils/               # Utility functions
-│   └── test_plot.py     # Plotting utilities
-├── config/              # Configuration files
-├── main.py              # Main entry point
-├── requirements.txt     # Dependencies
-└── venv/                # Virtual environment
+├── feature_engineering/   # Build features, lags, targets; merge utilities
+├── model/                 # LightGBM pipeline, batch runs, diagnostics, plots
+├── strategies/            # Signals from models/RSI and chart inspection
+├── backtesting/           # Backtesting (Backtesting.py & Backtrader) + configs
+├── analysis/              # EDA scripts and notebooks
+├── utils/                 # Data utilities (download/merge/generate TA)
+├── data/                  # Example OHLCV/features targets CSVs
+├── results/               # Backtests and interactive plots
+├── docs/                  # Methodology and usage notes
+└── requirements.txt       # Project dependencies
 ```
 
-## 🚀 Quick Start
-
-### Setup Environment
+### Setup
 
 ```bash
-# Create and activate virtual environment
 python3 -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-### Run Commands
+### Data sources
 
-**Using main.py (recommended):**
-```bash
-# Run backtest
-python main.py backtest
+The repository uses hourly/4h/daily OHLCV and derived RSI features from:
+- Binance (e.g., BTC/USDT, SOL/USDT)
+- Coinbase (e.g., BTC/USD, SOL/USD)
 
-# Plot strategy results
-python main.py plot
-
-# Debug strategy logic
-python main.py debug
-
-# Merge crypto data
-python main.py merge
-
-# Run RSI analysis
-python main.py analyze
-```
-
-**From individual directories:**
-```bash
-# Run backtest
-cd backtesting
-python run_strategy.py
-
-# Plot strategy
-cd backtesting
-python plot_strategy.py
-
-# Debug strategy
-cd backtesting
-python debug_strategy.py
-```
-
-## 🔧 Dependencies
-
-**Core Libraries:**
-- `backtrader>=1.9.76.123` - Backtesting framework
-- `pandas>=1.5.0` - Data manipulation
-- `numpy>=1.21.0` - Numerical computing
-- `matplotlib>=3.5.0` - Plotting
-- `seaborn>=0.11.0` - Statistical visualization
-- `scikit-learn>=1.1.0` - Machine learning utilities
-
-Install all dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-## 📈 Data Sources
-
-The strategy uses merged 4-hour cryptocurrency data with multi-timeframe RSI indicators from:
-- Binance (BTC/USDT, SOL/USDT, SOL/USD)
-- Coinbase (BTC/USD, SOL/USD)
-
+Refer to `docs/` for details on feature/target engineering and signal flow.
