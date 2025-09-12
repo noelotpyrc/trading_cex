@@ -80,7 +80,7 @@ def _all_model_files(model_root: Path) -> List[Path]:
 
 
 def resolve_model_file(
-    model_root: Union[str, Path] = DEFAULT_MODEL_ROOT,
+    model_root: Union[str, Path] | None = DEFAULT_MODEL_ROOT,
     model_path: Optional[Union[str, Path]] = None,
 ) -> Tuple[Path, Path]:
     """Resolve the model.txt path and its run directory.
@@ -96,7 +96,6 @@ def resolve_model_file(
     Raises:
         FileNotFoundError: When no model file can be found
     """
-    root = Path(model_root)
     if model_path is not None:
         mp = Path(model_path)
         if mp.is_dir():
@@ -111,6 +110,8 @@ def resolve_model_file(
             return mp, mp.parent
         raise FileNotFoundError(f"Provided model_path does not exist: {mp}")
 
+    # Only use model_root when model_path is not provided
+    root = Path(model_root) if model_root is not None else DEFAULT_MODEL_ROOT
     # Discover all model.txt files and pick the most recently modified one
     candidates = _all_model_files(root)
     if not candidates:
