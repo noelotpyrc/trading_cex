@@ -47,6 +47,26 @@
   - DuckDB (separate DB module): append predictions (and optionally features) with minimal columns: `dataset`, `timestamp`, `model_run` (or path), `y_pred`.
   - Also write debug CSV/Parquet artifacts to a temp/debug directory for inspection.
 
+### Current minimal persistence (file-based)
+- We persist per-run, timestamped CSV artifacts under a provided `--debug-dir`.
+- Filenames include both the bar timestamp (the candle predicted) and the run timestamp (execution time):
+  - `features_<dataset>_<barTS>_<runTS>.csv`
+  - `prediction_<dataset>_<barTS>_<runTS>.csv`
+- `prediction_*.csv` columns (absolute minimum we agreed):
+  - `timestamp`: predicted bar timestamp
+  - `y_pred`: model prediction
+  - `model_run`: full path to the model run directory used (e.g., `/Volumes/Extreme SSD/.../run_...`)
+  - `run_ts`: execution timestamp
+- `features_*.csv` columns:
+  - `timestamp` plus all feature columns aligned to the model schema for that bar
+- Rationale: we haven't finalized DB persistence for feature snapshots yet; timestamped files provide durable, append-only history without overwrites.
+
+### DuckDB (test-only for now)
+- For smoke/integration tests we write predictions into a DuckDB file (path passed via `--duckdb`).
+- Minimal table definition used by tests (subject to change when the DB module is introduced):
+  - `predictions(dataset TEXT, timestamp TIMESTAMP, model_run TEXT, y_pred DOUBLE, created_at TIMESTAMP)`
+- The test DB is placed under `/Volumes/Extreme SSD/trading_data/cex/db/` by default for local runs.
+
 ## Scheduling/cadence
 - Run hourly, close to the hour start (on the first complete candle). Small grace offset allowed.
 
