@@ -45,4 +45,27 @@ def compute_latest_features_from_lookbacks(lookbacks_by_tf: Dict[str, pd.DataFra
     return df
 
 
+def validate_features_for_model(booster, features_row: pd.DataFrame) -> None:
+    """Ensure model-required features exist and are non-NaN in the features row.
+
+    Aligns to booster.feature_name() and checks for missing/NaN values.
+    """
+    from model.lgbm_inference import align_features_for_booster
+
+    if 'timestamp' not in features_row.columns:
+        raise ValueError("features_row must include 'timestamp'")
+
+    aligned = align_features_for_booster(features_row.drop(columns=['timestamp'], errors='ignore'), booster)
+    model_cols = list(booster.feature_name())
+    # Missing columns are filled by aligner; we still consider this invalid for strict mode
+    missing = [c for c in model_cols if c not in features_row.columns]
+    if missing:
+        raise ValueError(f"Missing model features in built row: {missing[:20]}")
+    na_mask = aligned[model_cols].isna().any(axis=1)
+    if bool(na_mask.iloc[0]):
+        na_cols = aligned.columns[aligned.iloc[0].isna()].tolist()
+        raise ValueError(f"NaN in model features for inference row; columns: {na_cols[:20]}")
+
+
+
 

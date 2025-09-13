@@ -107,4 +107,41 @@ def ensure_min_history(df: pd.DataFrame, hours_required: int) -> Tuple[pd.DataFr
     return trimmed, last_ts
 
 
+def validate_hourly_continuity(
+    df: pd.DataFrame,
+    *,
+    end_ts: pd.Timestamp,
+    required_hours: int,
+) -> None:
+    """Fail-fast validation: ensure strictly continuous hourly data ending at end_ts.
+
+    - No missing hours, no duplicates within the last `required_hours` hours
+    - Timestamps normalized to hour boundary are expected
+    """
+    if 'timestamp' not in df.columns:
+        raise ValueError("Dataframe must include 'timestamp' column for continuity validation")
+
+    start_ts = pd.Timestamp(end_ts) - pd.Timedelta(hours=required_hours - 1)
+    window = df[(df['timestamp'] >= start_ts) & (df['timestamp'] <= end_ts)].copy()
+    if window.empty:
+        raise ValueError("Continuity check window is empty; insufficient data")
+
+    # Normalize to hour floor
+    ts_series = pd.to_datetime(window['timestamp'], errors='coerce')
+    ts_series = ts_series.dt.floor('H')
+    # Duplicates
+    if ts_series.duplicated(keep=False).any():
+        dups = ts_series[ts_series.duplicated(keep=False)].astype(str).unique().tolist()
+        raise ValueError(f"Duplicate hourly timestamps detected in inference window: {dups[:10]}")
+
+    # Missing hours
+    expected = pd.date_range(end=end_ts.floor('H'), periods=required_hours, freq='H')
+    have = pd.Index(ts_series.unique())
+    missing = expected.difference(have)
+    if len(missing) > 0:
+        raise ValueError(f"Missing {len(missing)} hourly bars in inference window; sample missing: {[str(x) for x in list(missing[:10])]}")
+
+
+
+
 

@@ -29,16 +29,25 @@
 - Source: hourly OHLCV feed (CSV or DB extract) ending at the latest complete hour.
 - History requirement: at least 30 days of 1H data, with a small buffer (e.g., +2–6 hours).
 - Data must be UTC-normalized, deduplicated, sorted ascending.
+- Continuity: within the last (720 + buffer) hours ending at the latest complete hour, there must be no missing or duplicate hourly bars.
 
 ## Lookbacks and resampling
 - Use the same utilities as training (right-closed (t−Δ, t] bins):
   - 1H: raw right-aligned slice
   - 4H/12H/1D: `resample_ohlcv_right_closed` on the 1H lookback window
 - Build lookbacks in-memory for the latest timestamp (no PKL persistence during inference).
+- Buffer usage: the buffer is only for data completeness. After building lookbacks from the last (720 + buffer) hours, we TRIM to the exact base window before feature computation:
+  - 1H: last 720 rows; 4H: last 180 rows; 12H: last 60 rows; 1D: last 30 rows.
+- Exactness: each timeframe’s lookback must have the exact number of rows above, end-aligned to the target bar, include `open, high, low, close, volume`, and contain no NaNs.
 
 ## Feature computation
 - Build multi-timeframe features from the generated lookbacks for the latest 1H bar only.
 - Ensure feature schema alignment to the model via `booster.feature_name()`; add missing columns with NaN if ever needed (but prefer fail-fast on insufficient history).
+
+### Strict validations before scoring
+1) Input continuity: validate there are no missing/duplicate hourly bars in the last (720 + buffer) hours.
+2) Lookbacks exactness: validate each timeframe has the exact number of rows, end-aligned, required OHLCV columns present, and no NaNs.
+3) Model feature integrity: after building features, validate all model-required features exist and are non-NaN for the scoring row.
 
 ## Prediction and persistence
 - Load the selected LightGBM `model.txt`.

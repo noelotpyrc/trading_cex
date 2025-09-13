@@ -12,9 +12,9 @@ from datetime import datetime
 
 import pandas as pd
 
-from run.data_loader import load_ohlcv_csv, HistoryRequirement, ensure_min_history
-from run.lookbacks_builder import build_latest_lookbacks
-from run.features_builder import compute_latest_features_from_lookbacks
+from run.data_loader import load_ohlcv_csv, HistoryRequirement, ensure_min_history, validate_hourly_continuity
+from run.lookbacks_builder import build_latest_lookbacks, trim_lookbacks_to_base_window, validate_lookbacks_exact
+from run.features_builder import compute_latest_features_from_lookbacks, validate_features_for_model
 from run.model_io_lgbm import load_lgbm_model, predict_latest_row
 from run.persist_duckdb import ensure_tables, write_prediction, write_features_latest
 
@@ -37,15 +37,21 @@ def main() -> None:
     # 2) Ensure history coverage (30d + buffer)
     history = HistoryRequirement(required_hours=30*24, buffer_hours=args.buffer_hours)
     df_trimmed, latest_ts = ensure_min_history(df, hours_required=history.total_required_hours)
+    validate_hourly_continuity(df_trimmed, end_ts=latest_ts, required_hours=history.total_required_hours)
 
     # 3) Build lookbacks at latest bar
     lookbacks = build_latest_lookbacks(df_trimmed, window_hours=history.total_required_hours, timeframes=args.timeframes)
+    # 3b) Trim lookbacks to base window (no buffer influence on features)
+    lookbacks = trim_lookbacks_to_base_window(lookbacks, base_hours=30*24)
+    validate_lookbacks_exact(lookbacks, base_hours=30*24, end_ts=latest_ts)
 
     # 4) Compute features for latest bar
     features_row = compute_latest_features_from_lookbacks(lookbacks)
 
     # 5) Load model & predict
     booster, run_dir = load_lgbm_model(model_root=args.model_root, model_path=args.model_path)
+    # strict validation using model feature schema
+    validate_features_for_model(booster, features_row)
     y_pred = predict_latest_row(booster, features_row)
 
     # 6) Persist prediction and (optional) features
@@ -72,12 +78,7 @@ def main() -> None:
         bar_ts = pd.Timestamp(features_row['timestamp'].iloc[0]).strftime('%Y%m%d_%H%M%S')
         run_ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         features_row.to_csv(dbg_dir / f"features_{ds_tag}_{bar_ts}_{run_ts}.csv", index=False)
-        pd.DataFrame({
-            'timestamp': [features_row['timestamp'].iloc[0]],
-            'y_pred': [y_pred],
-            'model_run': [str(run_dir)],
-            'run_ts': [run_ts],
-        }).to_csv(
+        pd.DataFrame({'timestamp': [features_row['timestamp'].iloc[0]], 'y_pred': [y_pred], 'model_run': [str(run_dir)], 'run_ts': [run_ts]}).to_csv(
             dbg_dir / f"prediction_{ds_tag}_{bar_ts}_{run_ts}.csv", index=False
         )
 
