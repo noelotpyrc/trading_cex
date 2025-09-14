@@ -76,7 +76,7 @@ def latest_complete_hour(df: pd.DataFrame) -> pd.Timestamp:
         raise ValueError("Dataframe must include 'timestamp' column")
     last_ts = pd.Timestamp(df['timestamp'].iloc[-1])
     # Align to hour floor
-    last_hour = last_ts.floor('H')
+    last_hour = last_ts.floor('h')
     if last_ts != last_hour:
         # Drop the partial last bar by returning its previous hour
         return last_hour
@@ -128,19 +128,18 @@ def validate_hourly_continuity(
 
     # Normalize to hour floor
     ts_series = pd.to_datetime(window['timestamp'], errors='coerce')
-    ts_series = ts_series.dt.floor('H')
+    ts_series = ts_series.dt.floor('h')
     # Duplicates
     if ts_series.duplicated(keep=False).any():
         dups = ts_series[ts_series.duplicated(keep=False)].astype(str).unique().tolist()
         raise ValueError(f"Duplicate hourly timestamps detected in inference window: {dups[:10]}")
 
     # Missing hours
-    expected = pd.date_range(end=end_ts.floor('H'), periods=required_hours, freq='H')
+    expected = pd.date_range(end=end_ts.floor('h'), periods=required_hours, freq='h')
     have = pd.Index(ts_series.unique())
     missing = expected.difference(have)
     if len(missing) > 0:
         raise ValueError(f"Missing {len(missing)} hourly bars in inference window; sample missing: {[str(x) for x in list(missing[:10])]}")
-
 
 
 

@@ -32,7 +32,7 @@ def main() -> None:
     import numpy as np
     import pandas as pd
     rng = np.random.default_rng(3)
-    ts = pd.date_range('2024-01-01', periods=n, freq='H')
+    ts = pd.date_range('2024-01-01', periods=n, freq='h')
     base = 100 + np.cumsum(rng.normal(0, 0.5, size=n))
     close = base + rng.normal(0, 0.2, size=n)
     spread = np.abs(rng.normal(0.2, 0.05, size=n))
@@ -83,5 +83,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
 

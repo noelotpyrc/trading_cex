@@ -15,7 +15,7 @@ def main() -> None:
     rng = np.random.default_rng(42)
     n = args.rows
 
-    ts = pd.date_range("2024-01-01", periods=n, freq="H")
+    ts = pd.date_range("2024-01-01", periods=n, freq="h")
     f1 = rng.normal(size=n)
     f2 = rng.normal(size=n)
     f3 = rng.normal(size=n)
@@ -37,5 +37,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

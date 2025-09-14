@@ -123,7 +123,7 @@ def validate_lookbacks_exact(
             raise ValueError(f"Lookback length mismatch for {tf}: got {len(df)} expected {expect}")
         # alignment
         last_idx = pd.to_datetime(df.index[-1], errors='coerce')
-        aligned = end_ts.floor('H') if tf in ("1H","H","60T") else end_ts.floor(tf)
+        aligned = end_ts.floor('h') if tf in ("1H","H","60T") else end_ts.floor(tf)
         if pd.Timestamp(last_idx) != pd.Timestamp(aligned):
             raise ValueError(f"Lookback alignment mismatch for {tf}: last={last_idx} expected={aligned}")
         # columns present and not NA
@@ -134,7 +134,6 @@ def validate_lookbacks_exact(
             bad = df[required_cols].isna().any(axis=1)
             bad_ts = [str(x) for x in df.index[bad][:10]]
             raise ValueError(f"NaNs in {tf} lookback OHLCV near end; sample rows: {bad_ts}")
-
 
 
 

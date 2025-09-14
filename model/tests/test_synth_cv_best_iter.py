@@ -44,7 +44,7 @@ def _ensure_synth_csv(csv_path: Path, num_rows: int = 1200, seed: int = 42) -> N
     """
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
-    timestamps = pd.date_range('2024-01-01', periods=num_rows, freq='H')
+    timestamps = pd.date_range('2024-01-01', periods=num_rows, freq='h')
     feature_x1 = rng.normal(loc=0.0, scale=1.0, size=num_rows)
     feature_x2 = rng.normal(loc=0.0, scale=1.0, size=num_rows)
     feature_x3 = rng.normal(loc=0.0, scale=1.0, size=num_rows)
@@ -156,5 +156,4 @@ def _parse_args() -> argparse.Namespace:
 if __name__ == '__main__':
     args = _parse_args()
     run_test(args.config.resolve(), args.generate_if_missing)
-
 

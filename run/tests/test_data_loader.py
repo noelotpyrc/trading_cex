@@ -14,7 +14,7 @@ def _proj_root() -> Path:
 
 
 def _make_ohlcv(hours: int, with_partial_last: bool = False) -> pd.DataFrame:
-    ts = pd.date_range('2024-01-01', periods=hours, freq='H')
+    ts = pd.date_range('2024-01-01', periods=hours, freq='h')
     rng = np.random.default_rng(0)
     base = 100 + np.cumsum(rng.normal(0, 0.5, size=hours))
     noise = rng.normal(0, 0.2, size=hours)
@@ -76,6 +76,5 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
 
 
