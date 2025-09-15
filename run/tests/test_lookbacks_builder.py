@@ -13,7 +13,7 @@ def _proj_root() -> Path:
 
 
 def _make_hourly(n: int) -> pd.DataFrame:
-    ts = pd.date_range('2024-01-01', periods=n, freq='H')
+    ts = pd.date_range('2024-01-01', periods=n, freq='h')
     rng = np.random.default_rng(1)
     base = 100 + np.cumsum(rng.normal(0, 0.5, size=n))
     noise = rng.normal(0, 0.2, size=n)
@@ -52,5 +52,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
 

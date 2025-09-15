@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
 import pandas as pd
+import duckdb  # type: ignore
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,62 @@ def load_ohlcv_csv(path: str) -> pd.DataFrame:
     df = _normalize_timestamp_column(df)
     # Standardize OHLCV casing if present
     df.columns = [str(c).strip().lower() for c in df.columns]
+    return df
+
+
+def load_ohlcv_duckdb(
+    db_path: str | os.PathLike,
+    *,
+    table: str = 'ohlcv_btcusdt_1h',
+    start: Optional[pd.Timestamp] = None,
+    end: Optional[pd.Timestamp] = None,
+    limit: Optional[int] = None,
+) -> pd.DataFrame:
+    """Load OHLCV from a DuckDB table into a normalized DataFrame.
+
+    - Selects columns: timestamp, open, high, low, close, volume
+    - Normalizes `timestamp` to UTC-naive and lowercases column names
+    - Dedupe on timestamp and sort ascending
+    - Optional time range via `start` (inclusive) and `end` (inclusive)
+    - Optional `limit` (applied after ordering ascending)
+    """
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute("SET TimeZone='UTC';")
+        clauses = []
+        params: list[object] = []
+        if start is not None:
+            s = pd.to_datetime(start, utc=True).tz_convert('UTC').tz_localize(None)
+            clauses.append("timestamp >= ?")
+            params.append(pd.Timestamp(s).to_pydatetime())
+        if end is not None:
+            e = pd.to_datetime(end, utc=True).tz_convert('UTC').tz_localize(None)
+            clauses.append("timestamp <= ?")
+            params.append(pd.Timestamp(e).to_pydatetime())
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        q = f"SELECT timestamp, open, high, low, close, volume FROM {table}{where} ORDER BY timestamp ASC"
+        if limit is not None and int(limit) > 0:
+            q = f"{q} LIMIT {int(limit)}"
+        df = con.execute(q, params).fetch_df()
+    finally:
+        con.close()
+
+    # Normalize like CSV path
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    if 'timestamp' not in df.columns:
+        raise ValueError("DuckDB query did not return 'timestamp' column")
+    ts = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
+    df['timestamp'] = ts.dt.tz_convert('UTC').dt.tz_localize(None)
+    # Keep only the expected columns
+    cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+    df = df[cols]
+    # Coerce numeric
+    for c in ['open', 'high', 'low', 'close', 'volume']:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+    # Drop NaN timestamps and dedupe
+    df = df.dropna(subset=['timestamp'])
+    df = df[~df['timestamp'].duplicated(keep='last')]
+    df = df.sort_values('timestamp').reset_index(drop=True)
     return df
 
 
@@ -140,7 +197,6 @@ def validate_hourly_continuity(
     missing = expected.difference(have)
     if len(missing) > 0:
         raise ValueError(f"Missing {len(missing)} hourly bars in inference window; sample missing: {[str(x) for x in list(missing[:10])]}")
-
 
 
 
