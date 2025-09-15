@@ -9,7 +9,12 @@ from typing import Optional
 import pandas as pd
 
 from .api import fetch_klines, klines_to_dataframe, compute_target_hour
-from .db import ensure_table, read_last_n_rows_ending_before, append_row_if_absent
+from .db import (
+    ensure_table,
+    read_last_n_rows_ending_before,
+    append_row_if_absent,
+    coverage_stats,
+)
 from .persistence import PersistConfig, now_utc_run_id, write_raw_snapshot
 from .validation import validate_window
 
@@ -26,6 +31,7 @@ class RunConfig:
     dataset_slug: str
     dry_run: bool = False
     debug: bool = False
+    catch_up: bool = False
 
 
 def run_once(cfg: RunConfig) -> int:
@@ -60,30 +66,70 @@ def run_once(cfg: RunConfig) -> int:
     persist_cfg = PersistConfig(cfg.persist_dir, cfg.dataset_slug)
     raw_path = write_raw_snapshot(persist_cfg, run_id, api_df)
 
-    # Read DB window for validation: last N-1 rows ending at t-1
-    db_window = read_last_n_rows_ending_before(cfg.duckdb_path, cfg.n_recent - 1, target_hour)
-
-    # Validate
-    v = validate_window(closed_df, db_window, target_hour)
-
     appended = 0
-    allow_bootstrap = False
-    if not v.ok and len(db_window) == 0:
-        allow_bootstrap = True
-        if cfg.debug:
-            print("[INFO] bootstrap: no DB history; appending target hour without full validation")
-
-    if v.ok or allow_bootstrap:
-        # Append only bar at t
-        row_t = closed_df.tail(1).iloc[0]
-        if cfg.dry_run:
-            if cfg.debug:
-                print("[DRY-RUN] Would append:", row_t.to_dict())
+    if cfg.catch_up:
+        # Catch-up mode: validate overlap and append all missing closed rows
+        cov = coverage_stats(cfg.duckdb_path)
+        if cov is None:
+            # Bootstrap: DB empty, append entire closed window
+            to_append = closed_df.copy()
         else:
-            append_row_if_absent(cfg.duckdb_path, row_t)
-        appended = 1
+            _, db_max_ts, _ = cov
+            # Build overlap against DB tail up to db_max_ts
+            api_overlap = closed_df[closed_df["timestamp"] <= db_max_ts].copy()
+            if api_overlap.empty:
+                print(
+                    "[ERROR] No overlap between API closed window and DB. Increase --n-recent or backfill first.",
+                    file=sys.stderr,
+                )
+                return 2
+            # Validate overlap anchored at last overlap timestamp
+            t_overlap = api_overlap.iloc[-1]["timestamp"]
+            k = min(len(api_overlap), max(cfg.n_recent - 1, 1))
+            api_tail_for_val = api_overlap.tail(k).reset_index(drop=True)
+            db_hist = read_last_n_rows_ending_before(cfg.duckdb_path, len(api_tail_for_val) - 1, t_overlap)
+            v = validate_window(api_tail_for_val, db_hist, t_overlap)
+            if not v.ok:
+                print(f"[ERROR] overlap validation failed: {v.reason}", file=sys.stderr)
+                return 2
+            # Append rows strictly after DB max timestamp
+            to_append = closed_df[closed_df["timestamp"] > db_max_ts].copy()
+
+        if to_append.empty:
+            if cfg.debug:
+                print("[INFO] Catch-up: DB is up to date; nothing to append")
+        else:
+            for _, row in to_append.iterrows():
+                if cfg.dry_run:
+                    if cfg.debug:
+                        print("[DRY-RUN] Would append:", row.to_dict())
+                else:
+                    append_row_if_absent(cfg.duckdb_path, row)
+                appended += 1
     else:
-        print(f"[WARN] validation failed: {v.reason}")
+        # Read DB window for validation: last N-1 rows ending at t-1
+        db_window = read_last_n_rows_ending_before(cfg.duckdb_path, cfg.n_recent - 1, target_hour)
+
+        # Validate single-hour append
+        v = validate_window(closed_df, db_window, target_hour)
+
+        allow_bootstrap = False
+        if not v.ok and len(db_window) == 0:
+            allow_bootstrap = True
+            if cfg.debug:
+                print("[INFO] bootstrap: no DB history; appending target hour without full validation")
+
+        if v.ok or allow_bootstrap:
+            # Append only bar at t
+            row_t = closed_df.tail(1).iloc[0]
+            if cfg.dry_run:
+                if cfg.debug:
+                    print("[DRY-RUN] Would append:", row_t.to_dict())
+            else:
+                append_row_if_absent(cfg.duckdb_path, row_t)
+            appended = 1
+        else:
+            print(f"[WARN] validation failed: {v.reason}")
 
     # Log concise stats
     print(
@@ -107,6 +153,7 @@ def parse_args(argv: Optional[list[str]] = None) -> RunConfig:
     )
     p.add_argument("--dry-run", action="store_true", help="Do not write to DB")
     p.add_argument("--debug", action="store_true", help="Verbose logging")
+    p.add_argument("--catch-up", action="store_true", help="Append all missing closed bars in the API window after validating overlap")
     args = p.parse_args(argv)
 
     return RunConfig(
@@ -116,6 +163,7 @@ def parse_args(argv: Optional[list[str]] = None) -> RunConfig:
         dataset_slug=args.dataset,
         dry_run=args.dry_run,
         debug=args.debug,
+        catch_up=args.catch_up,
     )
 
 
