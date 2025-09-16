@@ -17,18 +17,86 @@ import os
 import sys
 import time
 import argparse
+from pathlib import Path
 from typing import Dict
 import pandas as pd
 import numpy as np
 
-# Import core functions
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from feature_engineering.multi_timeframe_features import (
-    calculate_price_differences,
-    calculate_log_transform,
-    calculate_percentage_changes,
-    calculate_cumulative_returns,
-    calculate_zscore,
+# Import core functions (robust to running as a script from repo root)
+try:
+    from feature_engineering.multi_timeframe_features import (
+        calculate_price_differences,
+        calculate_log_transform,
+        calculate_percentage_changes,
+        calculate_cumulative_returns,
+        calculate_zscore,
+        calculate_sma,
+        calculate_ema,
+        calculate_wma,
+        calculate_ma_crossovers,
+        calculate_ma_distance,
+        calculate_macd,
+        calculate_volume_ma,
+        calculate_rsi,
+        calculate_stochastic,
+        calculate_cci,
+        calculate_roc,
+        calculate_williams_r,
+        calculate_ultimate_oscillator,
+        calculate_mfi,
+        calculate_historical_volatility,
+        calculate_atr,
+        calculate_bollinger_bands,
+        calculate_volatility_ratio,
+        calculate_parkinson_volatility,
+        calculate_garman_klass_volatility,
+        calculate_obv,
+        calculate_vwap,
+        calculate_adl,
+        calculate_chaikin_oscillator,
+        calculate_volume_roc,
+        calculate_rolling_percentiles,
+        calculate_distribution_features,
+        calculate_autocorrelation,
+        calculate_hurst_exponent,
+        calculate_entropy,
+        calculate_price_volume_ratios,
+        calculate_candle_patterns,
+        calculate_typical_price,
+        calculate_ohlc_average,
+        calculate_volatility_adjusted_returns,
+        calculate_time_features,
+        calculate_rolling_extremes,
+        calculate_dominant_cycle,
+        # Additional
+        calculate_adx,
+        calculate_rogers_satchell_volatility,
+        calculate_yang_zhang_volatility,
+        calculate_rvol,
+        calculate_donchian_distance,
+        calculate_aroon,
+        calculate_return_zscore,
+        calculate_atr_normalized_distance,
+        calculate_roll_spread,
+        calculate_amihud_illiquidity,
+        calculate_turnover_zscore,
+        calculate_ljung_box_pvalue,
+        calculate_permutation_entropy,
+        calculate_ou_half_life,
+        calculate_var_cvar,
+        calculate_spectral_entropy,
+    )
+except ModuleNotFoundError:
+    # Add repo root so `feature_engineering` package can be found
+    repo_root = Path(__file__).resolve().parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from feature_engineering.multi_timeframe_features import (
+        calculate_price_differences,
+        calculate_log_transform,
+        calculate_percentage_changes,
+        calculate_cumulative_returns,
+        calculate_zscore,
     calculate_sma,
     calculate_ema,
     calculate_wma,
@@ -287,5 +355,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-
 

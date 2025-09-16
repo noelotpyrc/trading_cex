@@ -7,6 +7,9 @@ Each timeframe PKL stores a dictionary with:
   - 'lookback_base_rows': number of base rows used for each row's lookback window
   - 'rows': dict mapping row timestamp string -> lookback DataFrame for that timeframe
 
+This script logs progress and timings (rows processed, avg rows/sec) per timeframe
+and overall to help estimate throughput for large datasets.
+
 Usage:
   python feature_engineering/build_lookbacks.py --input data/ohlcv.csv --output data/lookbacks --timeframes 1H 4H 12H 1D
 """
@@ -15,6 +18,7 @@ import os
 import argparse
 import numpy as np
 import pandas as pd
+import time
 
 from utils import validate_ohlcv_data, resample_ohlcv_right_closed, get_lookback_window
 
@@ -63,6 +67,8 @@ def _build_timeframe_store(df: pd.DataFrame, timeframe: str, lookback_base_rows:
     base_idx = df.index
     rows_map: dict[str, pd.DataFrame] = {}
     total = len(base_idx)
+    start_time = time.time()
+    last_log = start_time
     for i, ts in enumerate(base_idx):
         lb_base = get_lookback_window(df, i, lookback_base_rows)
         if tf in ("1H", "H", "60T"):
@@ -72,7 +78,13 @@ def _build_timeframe_store(df: pd.DataFrame, timeframe: str, lookback_base_rows:
         # Store only if non-empty; still record empty for consistency
         rows_map[ts.strftime('%Y%m%d_%H%M%S')] = lb_tf
         if (i + 1) % 1000 == 0 or i == total - 1:
-            print(f"  {tf}: processed {i+1}/{total}")
+            now = time.time()
+            elapsed = now - start_time
+            batch_elapsed = now - last_log
+            avg_rps = (i + 1) / elapsed if elapsed > 0 else float('inf')
+            batch_rps = (min(1000, i + 1) / batch_elapsed) if batch_elapsed > 0 else float('inf')
+            print(f"  {tf}: processed {i+1}/{total} | avg {avg_rps:.2f} rows/s | last {batch_rps:.2f} rows/s")
+            last_log = now
     return {
         'timeframe': tf,
         'base_index': base_idx,
@@ -83,18 +95,30 @@ def _build_timeframe_store(df: pd.DataFrame, timeframe: str, lookback_base_rows:
 
 def process_and_store(input_path: str, output_dir: str, timeframes: list[str], lookback: int) -> None:
     df = _load_ohlcv(input_path)
-    print(f"Rows: {len(df)}; timeframes: {timeframes}; lookback: {lookback}")
+    total_rows = len(df)
+    print(f"Rows: {total_rows}; timeframes: {timeframes}; lookback: {lookback}")
     # Derive subfolder from input file name (without extension)
     base_name = os.path.splitext(os.path.basename(input_path))[0]
     final_out_dir = os.path.join(output_dir, base_name)
     os.makedirs(final_out_dir, exist_ok=True)
 
+    overall_start = time.time()
+    total_processed = 0
     for tf in timeframes:
         print(f"Building timeframe store: {tf} ...")
+        tf_start = time.time()
         store = _build_timeframe_store(df, tf, lookback)
         out_path = os.path.join(final_out_dir, f"lookbacks_{tf}.pkl")
         pd.to_pickle(store, out_path)
-        print(f"Wrote: {out_path} (rows={len(store['rows'])})")
+        tf_elapsed = time.time() - tf_start
+        rows_tf = len(store['rows'])
+        total_processed += rows_tf
+        rps = rows_tf / tf_elapsed if tf_elapsed > 0 else float('inf')
+        print(f"Wrote: {out_path} (rows={rows_tf}) | time {tf_elapsed:.2f}s | rate {rps:.2f} rows/s")
+
+    overall_elapsed = time.time() - overall_start
+    overall_rps = total_processed / overall_elapsed if overall_elapsed > 0 else float('inf')
+    print(f"All timeframes done: rows={total_processed} across {len(timeframes)} TFs | total {overall_elapsed:.2f}s | avg {overall_rps:.2f} rows/s")
 
 
 def main():
@@ -110,5 +134,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-
 
