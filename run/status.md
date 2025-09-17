@@ -11,7 +11,7 @@
 
 # 2025-09-16
 
-1. Created predictios and features DB management scripts, also create backfill scripts (from csv files).
+1. Created predictions and features DB management scripts, also create backfill scripts (from csv files).
 2. Created prediction and feature DBs from backfilling data, under db/binance_btcusdt_perp_prediction.duckdb and db/binance_btcusdt_perp_feature.duckdb
 
 # TODO
