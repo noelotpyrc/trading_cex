@@ -1,6 +1,6 @@
 import argparse
 from pathlib import Path
-from typing import Iterable, List, Set
+from typing import Iterable, List, Set, Optional
 
 import pandas as pd
 
@@ -41,12 +41,15 @@ DEFAULT_FEATURES_TO_REMOVE: List[str] = [
     "close_var_5_50_1D",
     "close_cvar_5_50_1D",
     "close_spectral_entropy_50_1D",
+    "close_perm_entropy_3_50_1D",
     "close_roll_spread_20_1D",
     # 1D time features (redundant with base 1H time features)
     "time_hour_of_day_1D",
     "time_day_of_week_1D",
     "time_day_of_month_1D",
     "time_month_of_year_1D",
+    'time_hour_cos_1D', 
+    'time_hour_sin_1D'
 ]
 
 
@@ -94,8 +97,13 @@ def _normalize_timestamp_column(df: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
-def _read_csv_with_timestamp(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path)
+def _read_table_with_timestamp(path: Path) -> pd.DataFrame:
+    """Read CSV or Parquet and normalize/ensure a 'timestamp' column."""
+    lower = str(path).lower()
+    if lower.endswith('.parquet') or lower.endswith('.pq'):
+        df = pd.read_parquet(path)
+    else:
+        df = pd.read_csv(path)
     return _normalize_timestamp_column(df)
 
 
@@ -108,8 +116,8 @@ def merge_features_only(
     """
     Merge the two feature CSVs on 'timestamp' and return the merged feature set.
     """
-    features_1h = _read_csv_with_timestamp(features_1h_path)
-    features_multi = _read_csv_with_timestamp(features_multi_path)
+    features_1h = _read_table_with_timestamp(features_1h_path)
+    features_multi = _read_table_with_timestamp(features_multi_path)
 
     # Debug logging for timestamp ranges and counts
     def _ts_info(name: str, df: pd.DataFrame) -> None:
@@ -164,7 +172,7 @@ def prepare_targets(targets_path: Path, features_for_alignment: pd.DataFrame) ->
         ts_max = df['timestamp'].max() if n else None
         print(f"{name}: rows={n}, unique_ts={unique_n}, dtype={dtype}, min={ts_min}, max={ts_max}")
 
-    targets = _read_csv_with_timestamp(targets_path)
+    targets = _read_table_with_timestamp(targets_path)
     _ts_info('targets', targets)
 
     def _is_plausible_ts_range(s: pd.Series) -> bool:
@@ -272,12 +280,32 @@ def _apply_cleanup(
         before_na_rows = len(out)
         na_mask = out.isna().any(axis=1)
         if log_dropped_na and na_mask.any():
-            dropped = out.loc[na_mask, ['timestamp']].copy()
-            timestamps = dropped['timestamp'].astype(str).tolist()
-            total = len(timestamps)
-            to_show = timestamps if total <= na_log_limit else timestamps[:na_log_limit]
-            print(f"NA row drop candidates: total={total}; showing up to {na_log_limit} timestamps:")
-            print(to_show)
+            dropped_rows = out.loc[na_mask].copy()
+            total = len(dropped_rows)
+            # 3a) Summarize per-column NA counts among rows to be dropped
+            per_col_na = dropped_rows.isna().sum().sort_values(ascending=False)
+            if 'timestamp' in per_col_na.index:
+                per_col_na = per_col_na.drop('timestamp')
+            top_cols = per_col_na.head(na_log_limit)
+            print(f"NA row drop candidates: total={total}")
+            if not top_cols.empty:
+                print("Top columns causing NA (col: count, pct_of_dropped):")
+                denom = float(total) if total > 0 else 1.0
+                lines = []
+                for col, cnt in top_cols.items():
+                    pct = (cnt / denom) * 100.0
+                    lines.append(f"  {col}: {int(cnt)} ({pct:.1f}%)")
+                print("\n".join(lines))
+            # 3b) Show sample row-wise NA reasons
+            sample = dropped_rows.head(na_log_limit)
+            print(f"Sample dropped rows (up to {na_log_limit}) with NA columns:")
+            for i in range(len(sample)):
+                row = sample.iloc[i]
+                ts_val = str(row.get('timestamp', 'n/a'))
+                na_cols = [c for c in sample.columns if c != 'timestamp' and pd.isna(row[c])]
+                # Trim overly long lists for readability
+                na_cols_display = na_cols if len(na_cols) <= 20 else na_cols[:20] + ['...']
+                print(f"  ts={ts_val} | na_cols={na_cols_display}")
         out = out.loc[~na_mask].reset_index(drop=True)
         after_na_rows = len(out)
         print(f"NA row drop: dropped_rows={before_na_rows - after_na_rows}")
@@ -305,6 +333,12 @@ def main() -> None:
     )
     parser.add_argument('--features-1h', type=str, default='features_1h.csv', help='File name for 1H features CSV')
     parser.add_argument('--features-multi', type=str, default='features_4h12h1d.csv', help='File name for multi-timeframe features CSV')
+    parser.add_argument(
+        '--features-file',
+        type=Path,
+        default=None,
+        help='Optional single features table (CSV/Parquet) containing all timeframes; if set, skips merging 1H and multi',
+    )
     parser.add_argument('--targets-file', type=str, default='targets.csv', help='File name for targets CSV')
     parser.add_argument(
         '--output',
@@ -350,17 +384,21 @@ def main() -> None:
     features_multi_path = args.features_dir / args.features_multi
     targets_path = args.targets_dir / args.targets_file
 
-    print(f"Reading features 1H: {features_1h_path}")
-    print(f"Reading features multi: {features_multi_path}")
+    if args.features_file is not None:
+        print(f"Reading single features table: {args.features_file}")
+        features_merged = _read_table_with_timestamp(args.features_file)
+        print(f"Single features table shape: {features_merged.shape}")
+    else:
+        print(f"Reading features 1H: {features_1h_path}")
+        print(f"Reading features multi: {features_multi_path}")
+        # Step 1: merge features only
+        features_merged = merge_features_only(
+            features_1h_path=features_1h_path,
+            features_multi_path=features_multi_path,
+            how='inner',
+        )
+        print(f"Features merged shape (pre-clean): {features_merged.shape}")
     print(f"Reading targets: {targets_path}")
-
-    # Step 1: merge features only
-    features_merged = merge_features_only(
-        features_1h_path=features_1h_path,
-        features_multi_path=features_multi_path,
-        how='inner',
-    )
-    print(f"Features merged shape (pre-clean): {features_merged.shape}")
 
     # Step 2: clean features
     features_to_remove: List[str] = []
@@ -413,5 +451,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
-

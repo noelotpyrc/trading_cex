@@ -1451,4 +1451,207 @@ def calculate_spectral_entropy(series: pd.Series, window: int = 50, column_name:
     ent = -np.sum(p * np.log(p + 1e-12)) / np.log(len(p))
     return {key: float(ent)}
 
- 
+
+# =============================================================================
+# NORMALIZED / STATIONARY FEATURE VARIANTS (new)
+# =============================================================================
+
+def calculate_price_ema_ratios(series: pd.Series, span: int = 12, column_name: str = 'close') -> Dict[str, float]:
+    """Price vs EMA ratios for stationarity
+
+    Returns two dimensionless features:
+      - '{col}_over_ema_{span}' = close / EMA(span)
+      - '{col}_log_ratio_ema_{span}' = log(close / EMA(span))
+    """
+    ratio_key = f"{column_name}_over_ema_{span}"
+    log_key = f"{column_name}_log_ratio_ema_{span}"
+    if len(series) < span:
+        return {ratio_key: np.nan, log_key: np.nan}
+    ema_val = series.ewm(span=span).mean().iloc[-1]
+    last = series.iloc[-1]
+    if np.isnan(ema_val) or ema_val == 0 or np.isnan(last) or last <= 0:
+        return {ratio_key: np.nan, log_key: np.nan}
+    ratio = float(last / ema_val)
+    log_ratio = float(np.log(ratio)) if ratio > 0 else np.nan
+    return {ratio_key: ratio, log_key: log_ratio}
+
+
+def calculate_price_ema_atr_distance(high: pd.Series, low: pd.Series, close: pd.Series,
+                                     span: int = 12, atr_window: int = 14,
+                                     column_name: str = 'close') -> Dict[str, float]:
+    """ATR-normalized distance between price and its EMA(span)
+
+    Returns: '{col}_dist_ema{span}_atr' = (close - EMA(span)) / ATR(atr_window)
+    """
+    if len(close) < max(span, atr_window) or len(high) < atr_window or len(low) < atr_window:
+        return {f"{column_name}_dist_ema{span}_atr": np.nan}
+    ema_val = close.ewm(span=span).mean().iloc[-1]
+    atr_key = f"{column_name}_atr_{atr_window}"
+    atr_val = calculate_atr(high, low, close, atr_window, column_name).get(atr_key, np.nan)
+    if np.isnan(ema_val) or np.isnan(atr_val) or atr_val <= 0 or len(close) == 0:
+        return {f"{column_name}_dist_ema{span}_atr": np.nan}
+    current = float(close.iloc[-1])
+    out = calculate_atr_normalized_distance(current, float(ema_val), float(atr_val), column_name, f"ema{span}")
+    # Key is '{col}_dist_ema{span}_atr'
+    return out
+
+
+def calculate_macd_normalized_by_close(series: pd.Series, fast: int = 12, slow: int = 26,
+                                       signal: int = 9, column_name: str = 'close') -> Dict[str, float]:
+    """Normalize MACD components by current close to reduce scale effects
+
+    Returns:
+      - '{col}_macd_line_{fast}_{slow}_over_close'
+      - '{col}_macd_histogram_{fast}_{slow}_{signal}_over_close'
+    """
+    if len(series) < max(fast, slow, signal) or len(series) == 0:
+        return {
+            f"{column_name}_macd_line_{fast}_{slow}_over_close": np.nan,
+            f"{column_name}_macd_histogram_{fast}_{slow}_{signal}_over_close": np.nan,
+        }
+    macd = calculate_macd(series, fast, slow, signal, column_name)
+    close_val = series.iloc[-1]
+    if close_val == 0 or np.isnan(close_val):
+        return {
+            f"{column_name}_macd_line_{fast}_{slow}_over_close": np.nan,
+            f"{column_name}_macd_histogram_{fast}_{slow}_{signal}_over_close": np.nan,
+        }
+    line_key = f"{column_name}_macd_line_{fast}_{slow}"
+    hist_key = f"{column_name}_macd_histogram_{fast}_{slow}_{signal}"
+    line = macd.get(line_key, np.nan)
+    hist = macd.get(hist_key, np.nan)
+    out = {
+        f"{column_name}_macd_line_{fast}_{slow}_over_close": (float(line) / float(close_val)) if not np.isnan(line) else np.nan,
+        f"{column_name}_macd_histogram_{fast}_{slow}_{signal}_over_close": (float(hist) / float(close_val)) if not np.isnan(hist) else np.nan,
+    }
+    return out
+
+
+def calculate_macd_over_atr(high: pd.Series, low: pd.Series, close: pd.Series,
+                             fast: int = 12, slow: int = 26, signal: int = 9,
+                             atr_window: int = 14, column_name: str = 'close') -> Dict[str, float]:
+    """Normalize MACD components by ATR to make them regime invariant
+
+    Returns:
+      - '{col}_macd_line_{fast}_{slow}_over_atr{atr_window}'
+      - '{col}_macd_histogram_{fast}_{slow}_{signal}_over_atr{atr_window}'
+    """
+    if len(close) < max(fast, slow, signal) or len(close) < atr_window or len(high) < atr_window or len(low) < atr_window:
+        return {
+            f"{column_name}_macd_line_{fast}_{slow}_over_atr{atr_window}": np.nan,
+            f"{column_name}_macd_histogram_{fast}_{slow}_{signal}_over_atr{atr_window}": np.nan,
+        }
+    macd = calculate_macd(close, fast, slow, signal, column_name)
+    atr_key = f"{column_name}_atr_{atr_window}"
+    atr_val = calculate_atr(high, low, close, atr_window, column_name).get(atr_key, np.nan)
+    if np.isnan(atr_val) or atr_val <= 0:
+        return {
+            f"{column_name}_macd_line_{fast}_{slow}_over_atr{atr_window}": np.nan,
+            f"{column_name}_macd_histogram_{fast}_{slow}_{signal}_over_atr{atr_window}": np.nan,
+        }
+    line_key = f"{column_name}_macd_line_{fast}_{slow}"
+    hist_key = f"{column_name}_macd_histogram_{fast}_{slow}_{signal}"
+    line = macd.get(line_key, np.nan)
+    hist = macd.get(hist_key, np.nan)
+    out = {
+        f"{column_name}_macd_line_{fast}_{slow}_over_atr{atr_window}": (float(line) / float(atr_val)) if not np.isnan(line) else np.nan,
+        f"{column_name}_macd_histogram_{fast}_{slow}_{signal}_over_atr{atr_window}": (float(hist) / float(atr_val)) if not np.isnan(hist) else np.nan,
+    }
+    return out
+
+
+def calculate_bollinger_width_pct(series: pd.Series, window: int = 20, num_std: float = 2.0,
+                                  column_name: str = 'close') -> Dict[str, float]:
+    """Bollinger width as a fraction of the middle band or price
+
+    Returns: '{col}_bb_width_pct_{window}_{std}' = width / middle
+    """
+    def _fmt_std(x: float) -> str:
+        return str(int(x)) if float(x).is_integer() else str(x).replace('.', '_')
+    std_tag = _fmt_std(num_std)
+    key = f"{column_name}_bb_width_pct_{window}_{std_tag}"
+    if len(series) < window:
+        return {key: np.nan}
+    bb = calculate_bollinger_bands(series, window, num_std, column_name)
+    middle = bb.get(f"{column_name}_bb_middle_{window}", np.nan)
+    width = bb.get(f"{column_name}_bb_width_{window}_{std_tag}", np.nan)
+    if np.isnan(middle) or middle == 0 or np.isnan(width):
+        return {key: np.nan}
+    return {key: float(width) / float(middle)}
+
+
+def calculate_obv_over_dollar_vol(close: pd.Series, volume: pd.Series, window: int = 20,
+                                   column_name: str = 'close') -> Dict[str, float]:
+    """OBV normalized by rolling dollar volume sum to reduce scale dependence
+
+    Returns: '{col}_obv_over_dollar_vol_{window}'
+    """
+    key = f"{column_name}_obv_over_dollar_vol_{window}"
+    if len(close) < 2 or len(close) < window or len(volume) < window:
+        return {key: np.nan}
+    obv_val = calculate_obv(close, volume, column_name).get(f"{column_name}_obv", np.nan)
+    dv = (close * volume).tail(window)
+    denom = float(dv.sum()) if len(dv) == window else np.nan
+    if np.isnan(obv_val) or denom == 0 or np.isnan(denom):
+        return {key: np.nan}
+    return {key: float(obv_val) / denom}
+
+
+def calculate_adl_over_dollar_vol(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series,
+                                   window: int = 20, column_name: str = 'close') -> Dict[str, float]:
+    """ADL normalized by rolling dollar volume sum
+
+    Returns: '{col}_adl_over_dollar_vol_{window}'
+    """
+    key = f"{column_name}_adl_over_dollar_vol_{window}"
+    if len(close) < 2 or len(close) < window or len(volume) < window:
+        return {key: np.nan}
+    adl_val = calculate_adl(high, low, close, volume, column_name).get(f"{column_name}_adl", np.nan)
+    dv = (close * volume).tail(window)
+    denom = float(dv.sum()) if len(dv) == window else np.nan
+    if np.isnan(adl_val) or denom == 0 or np.isnan(denom):
+        return {key: np.nan}
+    return {key: float(adl_val) / denom}
+
+
+def calculate_vwap_ratios(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series,
+                          column_name: str = 'close') -> Dict[str, float]:
+    """Price vs VWAP ratios for stationarity
+
+    Returns:
+      - '{col}_over_vwap' = close / vwap
+      - '{col}_log_ratio_vwap' = log(close / vwap)
+    """
+    ratio_key = f"{column_name}_over_vwap"
+    log_key = f"{column_name}_log_ratio_vwap"
+    if len(close) == 0:
+        return {ratio_key: np.nan, log_key: np.nan}
+    vwap_val = calculate_vwap(high, low, close, volume, column_name).get(f"{column_name}_vwap", np.nan)
+    last = close.iloc[-1]
+    if np.isnan(vwap_val) or vwap_val == 0 or np.isnan(last) or last <= 0:
+        return {ratio_key: np.nan, log_key: np.nan}
+    ratio = float(last / vwap_val)
+    log_ratio = float(np.log(ratio)) if ratio > 0 else np.nan
+    return {ratio_key: ratio, log_key: log_ratio}
+
+
+def calculate_time_features_cyc(timestamp: pd.Timestamp) -> Dict[str, float]:
+    """Cyclical encodings for time features (normalized)
+
+    Returns: hour/day-of-week/month sin/cos pairs
+      - 'time_hour_sin', 'time_hour_cos'
+      - 'time_dow_sin', 'time_dow_cos'
+      - 'time_month_sin', 'time_month_cos'
+    """
+    hour = timestamp.hour
+    dow = timestamp.dayofweek
+    month = timestamp.month
+    two_pi = 2.0 * np.pi
+    return {
+        'time_hour_sin': float(np.sin(two_pi * hour / 24.0)),
+        'time_hour_cos': float(np.cos(two_pi * hour / 24.0)),
+        'time_dow_sin': float(np.sin(two_pi * dow / 7.0)),
+        'time_dow_cos': float(np.cos(two_pi * dow / 7.0)),
+        'time_month_sin': float(np.sin(two_pi * month / 12.0)),
+        'time_month_cos': float(np.cos(two_pi * month / 12.0)),
+    }
