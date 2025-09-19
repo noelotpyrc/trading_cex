@@ -21,3 +21,7 @@
     2. Signals based on predictions on OHLCV data, and if y_true is available, also show signals' correctness
     3. Some other predictor features (from feature importance list)
 2. Create the updating (hourly run and catchup run) process for prediction and feature DBs
+
+# 2025-09-17
+
+1. Create a streamlit app to show the market view, signals and features/indicators.

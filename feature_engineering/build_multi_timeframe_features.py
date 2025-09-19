@@ -85,6 +85,16 @@ try:
         calculate_ou_half_life,
         calculate_var_cvar,
         calculate_spectral_entropy,
+        # Normalized variants
+    calculate_price_ema_ratios,
+    calculate_price_ema_atr_distance,
+    calculate_macd_normalized_by_close,
+    calculate_macd_over_atr,
+    calculate_bollinger_width_pct,
+    calculate_obv_over_dollar_vol,
+    calculate_adl_over_dollar_vol,
+    calculate_vwap_ratios,
+    calculate_time_features_cyc,
     )
 except ModuleNotFoundError:
     # Add repo root so `feature_engineering` package can be found
@@ -152,6 +162,16 @@ except ModuleNotFoundError:
     calculate_ou_half_life,
     calculate_var_cvar,
     calculate_spectral_entropy,
+    # Normalized variants
+    calculate_price_ema_ratios,
+    calculate_price_ema_atr_distance,
+    calculate_macd_normalized_by_close,
+    calculate_macd_over_atr,
+    calculate_bollinger_width_pct,
+    calculate_obv_over_dollar_vol,
+    calculate_adl_over_dollar_vol,
+    calculate_vwap_ratios,
+    calculate_time_features_cyc,
 )
 
 
@@ -197,6 +217,10 @@ def compute_features_one(lb: pd.DataFrame, tf: str, skip_slow: bool = False) -> 
     out.update(calculate_wma(close_s, 20, 'close'))
     out.update(calculate_ma_crossovers(close_s, 5, 20, 'close'))
 
+    # Normalized MA relations
+    out.update(calculate_price_ema_ratios(close_s, 12, 'close'))
+    out.update(calculate_price_ema_atr_distance(high_s, low_s, close_s, 12, 14, 'close'))
+
     # MA distance using SMA20
     sma20 = out.get('close_sma_20')
     if sma20 is not None and not np.isnan(sma20) and len(close_s) > 0:
@@ -206,6 +230,9 @@ def compute_features_one(lb: pd.DataFrame, tf: str, skip_slow: bool = False) -> 
 
     # MACD
     out.update(calculate_macd(close_s, 12, 26, 9, 'close'))
+    # Normalized MACD variants
+    out.update(calculate_macd_normalized_by_close(close_s, 12, 26, 9, 'close'))
+    out.update(calculate_macd_over_atr(high_s, low_s, close_s, 12, 26, 9, 14, 'close'))
 
     # Volume basics
     out.update(calculate_volume_ma(volume_s, 20, 'volume'))
@@ -223,15 +250,23 @@ def compute_features_one(lb: pd.DataFrame, tf: str, skip_slow: bool = False) -> 
     out.update(calculate_historical_volatility(close_s, 20, 'close'))
     out.update(calculate_atr(high_s, low_s, close_s, 14, 'close'))
     out.update(calculate_bollinger_bands(close_s, 20, 2.0, 'close'))
+    # Bollinger width as percent of middle band
+    out.update(calculate_bollinger_width_pct(close_s, 20, 2.0, 'close'))
     out.update(calculate_volatility_ratio(close_s, 5, 50, 'close'))
     out.update(calculate_parkinson_volatility(high_s, low_s, 20, 'close'))
     out.update(calculate_garman_klass_volatility(high_s, low_s, open_s, close_s, 20, 'close'))
 
     # Volume-price integration
     out.update(calculate_obv(close_s, volume_s, 'close'))
+    # OBV normalized by rolling dollar volume
+    out.update(calculate_obv_over_dollar_vol(close_s, volume_s, 20, 'close'))
     out.update(calculate_vwap(high_s, low_s, close_s, volume_s, 'close'))
+    # Price vs VWAP ratios
+    out.update(calculate_vwap_ratios(high_s, low_s, close_s, volume_s, 'close'))
     if not skip_slow:
         out.update(calculate_adl(high_s, low_s, close_s, volume_s, 'close'))
+        # ADL normalized by rolling dollar volume
+        out.update(calculate_adl_over_dollar_vol(high_s, low_s, close_s, volume_s, 20, 'close'))
         out.update(calculate_chaikin_oscillator(high_s, low_s, close_s, volume_s, 3, 10, 'close'))
     out.update(calculate_volume_roc(volume_s, 10, 'volume'))
 
@@ -260,6 +295,8 @@ def compute_features_one(lb: pd.DataFrame, tf: str, skip_slow: bool = False) -> 
     # (time features use the last timestamp of window)
     if len(lb.index) > 0:
         out.update(calculate_time_features(pd.Timestamp(lb.index[-1])))
+        # Cyclical encodings for time
+        out.update(calculate_time_features_cyc(pd.Timestamp(lb.index[-1])))
     out.update(calculate_rolling_extremes(close_s, 20, 'close'))
     # Dominant cycle uses FFT; keep it
     out.update(calculate_dominant_cycle(close_s, 50, 'close'))
@@ -355,4 +392,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

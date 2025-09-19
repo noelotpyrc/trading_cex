@@ -179,37 +179,45 @@ def main():
 
     # 1H path
     if "1H" in tfs:
-        if not args.ohlcv_1h or not os.path.exists(args.ohlcv_1h):
-            raise FileNotFoundError("Provide --ohlcv-1h with the original 1H OHLCV file for the dataset.")
-        # lightweight loader (csv/parquet/pkl)
-        ext = os.path.splitext(args.ohlcv_1h)[1].lower()
-        if ext in (".csv", ".txt"):
-            df1h = pd.read_csv(args.ohlcv_1h)
-        elif ext in (".parquet", ".pq"):
-            df1h = pd.read_parquet(args.ohlcv_1h)
-        elif ext in (".pkl", ".pickle"):
-            df1h = pd.read_pickle(args.ohlcv_1h)
+        df1h = None
+        if args.ohlcv_1h and os.path.exists(args.ohlcv_1h):
+            # lightweight loader (csv/parquet/pkl)
+            ext = os.path.splitext(args.ohlcv_1h)[1].lower()
+            if ext in (".csv", ".txt"):
+                df1h = pd.read_csv(args.ohlcv_1h)
+            elif ext in (".parquet", ".pq"):
+                df1h = pd.read_parquet(args.ohlcv_1h)
+            elif ext in (".pkl", ".pickle"):
+                df1h = pd.read_pickle(args.ohlcv_1h)
+            else:
+                raise ValueError(f"Unsupported 1H input format: {ext}")
+            # ensure datetime index
+            if not isinstance(df1h.index, pd.DatetimeIndex):
+                time_col = None
+                for cand in ['timestamp', 'time', 'datetime', 'date']:
+                    if cand in df1h.columns:
+                        time_col = cand
+                        break
+                if time_col is None and len(df1h.columns) > 0 and str(df1h.columns[0]).lower() in ('time','timestamp','datetime','date'):
+                    time_col = df1h.columns[0]
+                if time_col is None:
+                    raise ValueError("1H OHLCV must have a DatetimeIndex or a 'timestamp'/'time' column")
+                df1h = df1h.set_index(pd.to_datetime(df1h[time_col], errors='coerce'))
+                df1h = df1h.drop(columns=[time_col])
+            df1h = df1h.sort_index()
+            # standardize columns
+            df1h.columns = [str(c).lower() for c in df1h.columns]
+            missing = [c for c in ['open','high','low','close','volume'] if c not in df1h.columns]
+            if missing:
+                raise ValueError(f"1H OHLCV missing columns: {missing}")
         else:
-            raise ValueError(f"Unsupported 1H input format: {ext}")
-        # ensure datetime index
-        if not isinstance(df1h.index, pd.DatetimeIndex):
-            time_col = None
-            for cand in ['timestamp', 'time', 'datetime', 'date']:
-                if cand in df1h.columns:
-                    time_col = cand
-                    break
-            if time_col is None and len(df1h.columns) > 0 and str(df1h.columns[0]).lower() in ('time','timestamp','datetime','date'):
-                time_col = df1h.columns[0]
-            if time_col is None:
-                raise ValueError("1H OHLCV must have a DatetimeIndex or a 'timestamp'/'time' column")
-            df1h = df1h.set_index(pd.to_datetime(df1h[time_col], errors='coerce'))
-            df1h = df1h.drop(columns=[time_col])
-        df1h = df1h.sort_index()
-        # standardize columns
-        df1h.columns = [str(c).lower() for c in df1h.columns]
-        missing = [c for c in ['open','high','low','close','volume'] if c not in df1h.columns]
-        if missing:
-            raise ValueError(f"1H OHLCV missing columns: {missing}")
+            # Fallback: reconstruct 1H OHLCV from lookbacks_1H.pkl
+            store_1h = stores.get("1H")
+            if store_1h is None:
+                raise FileNotFoundError(
+                    "1H timeframe requested but neither --ohlcv-1h nor lookbacks_1H.pkl is available."
+                )
+            df1h = reconstruct_1h_from_store(store_1h)
 
         feats_1h = build_1h_features(df1h, tf="1H", max_lag=args.max_lag)
         frames.append(feats_1h)
@@ -269,5 +277,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 

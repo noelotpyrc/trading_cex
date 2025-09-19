@@ -374,15 +374,27 @@ def main() -> None:
         refresh_clicked = st.button("Refresh data", type="primary", help="Clear cached queries and reload from DuckDB")
         if refresh_clicked:
             st.cache_data.clear()
-            st.experimental_rerun()
+            rerun_fn = getattr(st, "rerun", None)
+            if callable(rerun_fn):
+                rerun_fn()
+            else:
+                legacy_rerun = getattr(st, "experimental_rerun", None)
+                if callable(legacy_rerun):
+                    legacy_rerun()
+                else:
+                    st.warning("Please refresh the page to reload updated data.")
 
         start_date, end_date = _date_range_input()
-        direction_threshold = st.number_input(
+        direction_threshold = st.text_input(
             "Prediction threshold",
-            value=0.0,
-            format="%.3f",
+            value="0.00",
             help="Signals > threshold mark long entries; signals < threshold mark short entries.",
         )
+        try:
+            threshold_value = float(direction_threshold)
+        except (TypeError, ValueError):
+            st.warning("Invalid threshold input. Using 0.0")
+            threshold_value = 0.0
         show_long = st.checkbox(
             "Show long signals",
             value=True,
@@ -471,7 +483,7 @@ def main() -> None:
         predictions_df,
         ohlcv_df,
         horizon_hours=PREDICTION_HORIZON_HOURS,
-        direction_threshold=direction_threshold,
+        direction_threshold=threshold_value,
         include_long=show_long,
         include_short=show_short,
     )
