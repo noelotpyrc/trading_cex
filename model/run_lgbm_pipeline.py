@@ -27,6 +27,7 @@ import numpy as np
 import lightgbm as lgb
 import shutil
 from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import roc_auc_score, log_loss
 
 
 def setup_logging(log_level: str = "INFO") -> None:
@@ -92,9 +93,9 @@ def load_config(config_path: Path) -> Dict[str, Any]:
         raise ValueError("This pipeline only supports LightGBM models (model.type should be 'lgbm')")
 
     # Normalize objective schema
-    # Supported LightGBM objectives (regression-focused):
-    #   'regression', 'regression_l1', 'huber', 'fair', 'poisson', 'quantile',
-    #   'mape', 'gamma', 'tweedie'
+    # Supported LightGBM objectives:
+    #   Regression family: 'regression', 'regression_l1', 'huber', 'fair', 'poisson', 'quantile', 'mape', 'gamma', 'tweedie'
+    #   Classification: 'binary'
     target_config = config['target']
     obj_cfg = target_config.get('objective')
     if obj_cfg is None:
@@ -117,7 +118,9 @@ def load_config(config_path: Path) -> Dict[str, Any]:
     # Basic validation
     allowed_objectives = {
         'regression', 'regression_l1', 'huber', 'fair', 'poisson', 'quantile',
-        'mape', 'gamma', 'tweedie'
+        'mape', 'gamma', 'tweedie',
+        # classification
+        'binary',
     }
     if normalized_obj['name'] not in allowed_objectives:
         raise ValueError(f"Unsupported LightGBM objective: {normalized_obj['name']}")
@@ -253,6 +256,8 @@ def _primary_metric_for_objective(objective_name: str, config_metrics: Optional[
         return config_metrics[0]
     if objective_name == 'quantile':
         return 'pinball_loss'
+    if objective_name == 'binary':
+        return 'binary_logloss'
     # default regression
     return 'rmse'
 
@@ -267,6 +272,16 @@ def _evaluate_metric(name: str, y_true: np.ndarray, y_pred: np.ndarray, alpha: O
             raise ValueError("pinball_loss requires alpha for quantile evaluation")
         diff = y_true - y_pred
         return float(np.mean(np.maximum(alpha * diff, (alpha - 1.0) * diff)))
+    if name in {'binary_logloss', 'logloss', 'cross_entropy'}:
+        # y_true expected in {0,1}; y_pred are predicted probabilities for class 1
+        # Clip probabilities to avoid log(0)
+        p = np.clip(y_pred, 1e-12, 1 - 1e-12)
+        return float(log_loss(y_true, p, labels=[0, 1]))
+    if name in {'auc', 'roc_auc'}:
+        try:
+            return float(roc_auc_score(y_true, y_pred))
+        except Exception:
+            return float('nan')
     # Fallback to rmse
     return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
 
@@ -389,6 +404,8 @@ def _fit_once(
     def _default_metric_for_objective(name: str) -> List[str] | str:
         if name == 'quantile':
             return 'quantile'
+        if name == 'binary':
+            return ['binary_logloss', 'auc']
         if name in {'regression', 'huber', 'fair'}:
             return ['rmse', 'l1']
         if name == 'regression_l1':
