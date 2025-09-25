@@ -60,13 +60,25 @@ def compare_predictions(df_a: pd.DataFrame, df_b: pd.DataFrame) -> List[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("csv_a", help="Path to first predictions CSV")
-    parser.add_argument("csv_b", help="Path to second predictions CSV")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Compare predictions from two CSV files over their overlapping timestamps. "
+            "Accepts positional arguments or --csv-a/--csv-b flags."
+        )
+    )
+    parser.add_argument("csv_a", nargs="?", help="Path to first predictions CSV")
+    parser.add_argument("csv_b", nargs="?", help="Path to second predictions CSV")
+    parser.add_argument("--csv-a", dest="csv_a_opt", help="Optional flag-form path for source A")
+    parser.add_argument("--csv-b", dest="csv_b_opt", help="Optional flag-form path for source B")
     args = parser.parse_args()
 
-    df_a = load_predictions(Path(args.csv_a))
-    df_b = load_predictions(Path(args.csv_b))
+    csv_a_path = args.csv_a_opt or args.csv_a
+    csv_b_path = args.csv_b_opt or args.csv_b
+    if not csv_a_path or not csv_b_path:
+        parser.error("Please provide paths for both CSV inputs (either positional args or --csv-a/--csv-b)")
+
+    df_a = load_predictions(Path(csv_a_path))
+    df_b = load_predictions(Path(csv_b_path))
 
     print(f"Source A rows: {len(df_a):,}")
     print(f"Source B rows: {len(df_b):,}")

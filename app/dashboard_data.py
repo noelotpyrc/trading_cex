@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import duckdb  # type: ignore
+import numpy as np
 import pandas as pd
 
 
@@ -189,6 +190,7 @@ def compute_signal_metrics(
         return predictions.assign(
             direction=pd.Series(dtype="object"),
             forward_return=pd.Series(dtype="float64"),
+            forward_log_return=pd.Series(dtype="float64"),
             max_drawdown=pd.Series(dtype="float64"),
             is_correct=pd.Series(dtype="object"),
             has_full_horizon=pd.Series(dtype="bool"),
@@ -199,6 +201,7 @@ def compute_signal_metrics(
         return predictions.iloc[0:0].assign(
             direction=pd.Series(dtype="object"),
             forward_return=pd.Series(dtype="float64"),
+            forward_log_return=pd.Series(dtype="float64"),
             max_drawdown=pd.Series(dtype="float64"),
             is_correct=pd.Series(dtype="object"),
             has_full_horizon=pd.Series(dtype="bool"),
@@ -216,6 +219,7 @@ def compute_signal_metrics(
         return filtered.assign(
             direction=pd.Series(dtype="object"),
             forward_return=pd.Series(dtype="float64"),
+            forward_log_return=pd.Series(dtype="float64"),
             max_drawdown=pd.Series(dtype="float64"),
             is_correct=pd.Series(dtype="object"),
             has_full_horizon=pd.Series(dtype="bool"),
@@ -227,6 +231,7 @@ def compute_signal_metrics(
     if ohlcv.empty:
         preds = filtered.copy()
         preds["forward_return"] = pd.NA
+        preds["forward_log_return"] = pd.NA
         preds["max_drawdown"] = pd.NA
         preds["is_correct"] = pd.NA
         preds["has_full_horizon"] = False
@@ -246,6 +251,14 @@ def compute_signal_metrics(
     metrics_frame["future_close"] = future_close
     metrics_frame["min_future_low"] = min_future_low
     metrics_frame["max_future_high"] = max_future_high
+    with np.errstate(divide="ignore", invalid="ignore"):
+        close_positive = (metrics_frame["close"] > 0) & (metrics_frame["future_close"] > 0)
+        log_ret = np.where(
+            close_positive & metrics_frame["future_close"].notna(),
+            np.log(metrics_frame["future_close"]) - np.log(metrics_frame["close"]),
+            np.nan,
+        )
+    metrics_frame["forward_log_return"] = log_ret
 
     merged = filtered.merge(metrics_frame, on="timestamp", how="left", copy=False, suffixes=("", "_mkt"))
 
@@ -254,6 +267,8 @@ def compute_signal_metrics(
     merged["forward_return"] = (
         (merged["future_close"] / merged["close"]) - 1.0
     ).where(merged["has_full_horizon"])
+
+    merged["forward_log_return"] = merged["forward_log_return"].where(merged["has_full_horizon"])
 
     def _drawdown(row: pd.Series) -> float:
         entry = row.get("close")

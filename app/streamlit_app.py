@@ -279,6 +279,42 @@ def _build_feature_figure(feature_df: pd.DataFrame, feature_name: str) -> go.Fig
     return fig
 
 
+def _build_rolling_correlation_figure(corr_df: pd.DataFrame, window_size: int) -> go.Figure:
+    fig = go.Figure()
+
+    if not corr_df.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=corr_df["timestamp"],
+                y=corr_df["rolling_corr"],
+                mode="lines",
+                name=f"Rolling correlation ({window_size})",
+                line=dict(color="#ef553b"),
+                hovertemplate="%{x}<br>r=%{y:.3f}<extra></extra>",
+            )
+        )
+
+    fig.update_layout(
+        height=320,
+        margin=dict(l=0, r=0, t=20, b=30),
+        xaxis=dict(title="Timestamp"),
+        yaxis=dict(title="Pearson r", range=[-1.05, 1.05]),
+        template="plotly_white",
+        shapes=[
+            dict(
+                type="line",
+                xref="paper",
+                x0=0,
+                x1=1,
+                y0=0,
+                y1=0,
+                line=dict(color="#9ca3af", dash="dash"),
+            )
+        ],
+    )
+    return fig
+
+
 def _timestamp_bounds(start_date: date, end_date: date) -> tuple[pd.Timestamp, pd.Timestamp]:
     start_ts = pd.Timestamp(start_date).floor("D")
     end_ts = pd.Timestamp(end_date + timedelta(days=1)).floor("D")
@@ -410,8 +446,26 @@ def main() -> None:
             value=True,
             help="Toggle the 1h volume overlay on the candlestick chart.",
         )
+        rolling_correlation_window = st.number_input(
+            "Rolling correlation window",
+            min_value=20,
+            max_value=2000,
+            value=50,
+            step=10,
+            help="Number of samples used for the rolling correlation time series.",
+        )
+        correlation_window = st.number_input(
+            "Correlation window (rows)",
+            min_value=50,
+            max_value=10000,
+            value=500,
+            step=50,
+            help="Number of most recent signals used for the y_pred vs 168h log return correlation.",
+        )
 
     start_ts, end_ts = _timestamp_bounds(start_date, end_date)
+    rolling_correlation_window = int(rolling_correlation_window)
+    correlation_window = int(correlation_window)
 
     try:
         ohlcv_df = cached_load_ohlcv(ohlcv_path)
@@ -487,6 +541,72 @@ def main() -> None:
         include_long=show_long,
         include_short=show_short,
     )
+
+    correlation_source = compute_signal_metrics(
+        predictions_df,
+        ohlcv_df,
+        horizon_hours=PREDICTION_HORIZON_HOURS,
+        direction_threshold=float("-inf"),
+        include_long=True,
+        include_short=False,
+    )
+
+    correlation_value = np.nan
+    correlation_sample_size = 0
+    correlation_window_start: pd.Timestamp | None = None
+    correlation_window_end: pd.Timestamp | None = None
+    rolling_correlation_df = pd.DataFrame(columns=["timestamp", "rolling_corr"])
+    if not correlation_source.empty:
+        correlation_frame = (
+            correlation_source[["timestamp", "y_pred", "forward_log_return"]]
+            .dropna(subset=["y_pred", "forward_log_return"])
+            .sort_values("timestamp")
+        )
+        if not correlation_frame.empty:
+            recent_signals = correlation_frame.tail(correlation_window)
+            correlation_sample_size = len(recent_signals)
+            if correlation_sample_size >= 1:
+                correlation_window_start = recent_signals["timestamp"].iloc[0]
+                correlation_window_end = recent_signals["timestamp"].iloc[-1]
+            if correlation_sample_size >= 2:
+                corr = recent_signals["y_pred"].corr(recent_signals["forward_log_return"])
+                if pd.notna(corr):
+                    correlation_value = float(corr)
+
+            min_periods = max(10, rolling_correlation_window // 2)
+            rolling_series = (
+                correlation_frame["y_pred"]
+                .rolling(window=rolling_correlation_window, min_periods=min_periods)
+                .corr(correlation_frame["forward_log_return"])
+            )
+            rolling_correlation_df = correlation_frame[["timestamp"]].copy()
+            rolling_correlation_df["rolling_corr"] = rolling_series
+            rolling_correlation_df = rolling_correlation_df.dropna(subset=["rolling_corr"])
+
+    with st.sidebar:
+        st.subheader("Signal correlation")
+        if correlation_sample_size >= 2 and np.isfinite(correlation_value):
+            st.metric("Pearson r (y_pred vs 168h log)", f"{correlation_value:.3f}")
+            caption_lines = [f"Rows used: {correlation_sample_size} (window: {correlation_window})"]
+            if correlation_window_start is not None and correlation_window_end is not None:
+                start_str = correlation_window_start.strftime("%Y-%m-%d %H:%M")
+                end_str = correlation_window_end.strftime("%Y-%m-%d %H:%M")
+                caption_lines.append(f"Range: {start_str} → {end_str} UTC")
+            st.caption(" | ".join(caption_lines))
+        else:
+            st.metric("Pearson r (y_pred vs 168h log)", "n/a")
+            st.caption("Not enough realized signals to compute correlation.")
+
+    rolling_correlation_display = _filter_by_range(rolling_correlation_df, start_ts, end_ts)
+    if not rolling_correlation_display.empty:
+        rolling_corr_fig = _build_rolling_correlation_figure(rolling_correlation_display, rolling_correlation_window)
+        st.plotly_chart(rolling_corr_fig, use_container_width=True)
+    elif not rolling_correlation_df.empty:
+        st.caption("No rolling correlation points inside the selected date range.")
+    else:
+        st.caption(
+            "Rolling correlation requires sufficient realized signals; adjust the window or ensure data is available."
+        )
 
     ohlcv_display = _filter_by_range(ohlcv_df, start_ts, end_ts)
     signals_display = _filter_by_range(signals_with_metrics, start_ts, end_ts)

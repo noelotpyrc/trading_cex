@@ -472,6 +472,10 @@ def _tune_grid_search(config: Dict[str, Any], data_dir: Path, search_space: Dict
     X_full_train, y_full_train = _read_split(data_dir, 'train', target)
 
     base_params = config['model'].get('params', {})
+    # Store original values from config to use in final training
+    original_early_stopping_rounds = int(base_params.get('early_stopping_rounds', 100))
+    original_num_boost_round = int(base_params.get('num_boost_round', 1000))
+
     # Use CV-specific schedule if provided; otherwise fall back to base training schedule
     cv_cfg = _get_cv_config(config['model'])
     num_boost_round = int(cv_cfg.get('num_boost_round', base_params.get('num_boost_round', 1000)))
@@ -570,11 +574,18 @@ def _tune_grid_search(config: Dict[str, Any], data_dir: Path, search_space: Dict
             # Propagate best iteration from CV to final training schedule
             best_iter_for_best = int(best_iter_idx + 1)
 
-    # If we found a best CV iteration, fix final training to that number of rounds
+    # If we found a best CV iteration, set final training parameters
+    # If user wants early stopping, use original num_boost_round to allow early stopping to work
+    # If user doesn't want early stopping, use the CV optimal number of rounds
     if best_iter_for_best is not None:
         best_params = best_params.copy()
-        best_params['num_boost_round'] = int(best_iter_for_best)
-        best_params['early_stopping_rounds'] = 0
+        if original_early_stopping_rounds > 0:
+            # User wants early stopping - use high num_boost_round so early stopping can work
+            best_params['num_boost_round'] = original_num_boost_round
+        else:
+            # User doesn't want early stopping - use CV optimal rounds
+            best_params['num_boost_round'] = int(best_iter_for_best)
+        best_params['early_stopping_rounds'] = original_early_stopping_rounds
     return best_params
 
 
@@ -594,6 +605,10 @@ def _tune_bayesian(config: Dict[str, Any], data_dir: Path, search_space: Dict[st
     X_full_train, y_full_train = _read_split(data_dir, 'train', target)
 
     base_params = config['model'].get('params', {})
+    # Store original values from config to use in final training
+    original_early_stopping_rounds = int(base_params.get('early_stopping_rounds', 100))
+    original_num_boost_round = int(base_params.get('num_boost_round', 1000))
+
     # Use CV-specific schedule if provided; otherwise fall back to base training schedule
     cv_cfg = _get_cv_config(config['model'])
     num_boost_round = int(cv_cfg.get('num_boost_round', base_params.get('num_boost_round', 1000)))
@@ -713,8 +728,13 @@ def _tune_bayesian(config: Dict[str, Any], data_dir: Path, search_space: Dict[st
             mean_key = mean_keys[0]
     if mean_key in cv_results:
         best_iter_idx = int(np.argmin(cv_results[mean_key]))
-        best_params['num_boost_round'] = int(best_iter_idx + 1)
-        best_params['early_stopping_rounds'] = 0
+        if original_early_stopping_rounds > 0:
+            # User wants early stopping - use high num_boost_round so early stopping can work
+            best_params['num_boost_round'] = original_num_boost_round
+        else:
+            # User doesn't want early stopping - use CV optimal rounds
+            best_params['num_boost_round'] = int(best_iter_idx + 1)
+        best_params['early_stopping_rounds'] = original_early_stopping_rounds
         logging.info(
             "[bayes] Best result summary: best_iter=%d with params=%s",
             best_iter_idx + 1, json.dumps(best_params, sort_keys=True)
