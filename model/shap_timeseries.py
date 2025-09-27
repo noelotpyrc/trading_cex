@@ -157,17 +157,67 @@ def _load_targets_from_duckdb(
 
 
 def _build_contribution_figure(df: pd.DataFrame, top_features: List[str]) -> go.Figure:
+    value_cols = []
+    for feature in top_features:
+        value_col = f"{feature}_feat"
+        if value_col not in df.columns:
+            raise KeyError(
+                f"Feature values column '{value_col}' missing. Ensure feature data contains '{feature}'."
+            )
+        value_cols.append(value_col)
+
+    value_data = df[value_cols].to_numpy(dtype=float)
+    finite_mask = np.isfinite(value_data)
+    if finite_mask.any():
+        vmin = float(np.nanmin(value_data[finite_mask]))
+        vmax = float(np.nanmax(value_data[finite_mask]))
+        if vmin == vmax:
+            vmin -= 1e-6
+            vmax += 1e-6
+    else:
+        vmin, vmax = -1.0, 1.0
+
+    colorscale = "RdBu"
+
     fig = go.Figure()
     buttons = []
 
     for idx, feature in enumerate(top_features):
+        value_col = f"{feature}_feat"
+        color_values = df[value_col].to_numpy(dtype=float)
+        finite = np.isfinite(color_values)
+        if finite.any():
+            feature_vmin = float(np.nanmin(color_values[finite]))
+            feature_vmax = float(np.nanmax(color_values[finite]))
+            if feature_vmin == feature_vmax:
+                feature_vmin -= 1e-6
+                feature_vmax += 1e-6
+        else:
+            feature_vmin, feature_vmax = -1.0, 1.0
+        color_for_plot = np.where(finite, color_values, feature_vmin)
+        customdata = color_values.reshape(-1, 1)
+
         fig.add_trace(
             go.Scatter(
                 x=df["timestamp"],
                 y=df[feature],
-                mode="lines",
+                mode="lines+markers",
                 name=feature,
                 visible=(idx == 0),
+                line=dict(width=2, color="#1f77b4"),
+                marker=dict(
+                    size=5,
+                    color=color_for_plot,
+                    colorscale=colorscale,
+                    cmin=feature_vmin,
+                    cmax=feature_vmax,
+                    showscale=True,
+                    colorbar=dict(title="Feature value"),
+                ),
+                hovertemplate=(
+                    "timestamp=%{x}<br>SHAP=%{y:.6f}<br>feature value=%{customdata[0]:.6f}<extra></extra>"
+                ),
+                customdata=customdata,
             )
         )
         visibility = [False] * len(top_features)
