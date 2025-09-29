@@ -1,0 +1,27 @@
+{
+  "input_data": "/Volumes/Extreme SSD/trading_data/cex/training/BINANCE_BTCUSDT.P, 60/hmm_features.csv",
+  "output_dir": "/Volumes/Extreme SSD/trading_data/cex/models/BINANCE_BTCUSDT.P, 60/run_hmm_1h",
+  "features": {
+    "columns_suffix": "1H"
+  },
+  "split": {
+    "prep_metadata": "/Volumes/Extreme SSD/trading_data/cex/training/BINANCE_BTCUSDT.P, 60/prepared_20250909_161343_y_logret_168h/prep_metadata.json"
+  },
+  "model": {
+    "state_grid": { "min": 4, "max": 16 },
+    "covariance_type": "diag",
+    "reg_covar": 0.001,
+    "n_iter": 1000,
+    "tol": 0.001,
+    "random_state": 42,
+    "sticky_diag": 0.9
+  },
+  "selection": {
+    "criterion": "icl",
+    "restarts": 5,
+    "delta_threshold": 25,
+    "min_state_occupancy_pct": 0.02,
+    "cv_folds": 5,
+    "one_std_rule": true
+  }
+}
