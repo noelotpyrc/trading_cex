@@ -1,0 +1,30 @@
+{
+  "input_data": "/Volumes/Extreme SSD/trading_data/cex/training/BINANCE_BTCUSDT.P, 60/hmm_v1v2_features.csv",
+  "output_dir": "runs/hmm_columns_only_1h",
+  "features": {
+    "columns": [
+      "close_logret_current_1H",
+      "log_volume_delta_current_1H",
+      "close_parkinson_20_1H",
+      "close_ret_zscore_20_1H",
+      "volume_rvol_20_1H",
+      "close_over_vwap_1H",
+      "close_log_ratio_vwap_1H",
+      "high_low_range_pct_current_1H",
+      "close_open_pct_current_1H"
+    ]
+  },
+  "split": {
+    "train_ratio": 0.7,
+    "val_ratio": 0.15,
+    "test_ratio": 0.15
+  },
+  "model": {
+    "state_grid": [2, 3, 4, 5],
+    "covariance_type": "diag",
+    "n_iter": 200,
+    "tol": 0.001,
+    "random_state": 42
+  }
+}
+
