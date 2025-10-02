@@ -34,3 +34,6 @@ def predict_latest_row(booster: lgb.Booster, features_row_df: pd.DataFrame) -> f
 
 
 
+
+
+
