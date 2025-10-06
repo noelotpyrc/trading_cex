@@ -2,7 +2,8 @@ import argparse
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
+import fnmatch
 
 import numpy as np
 import pandas as pd
@@ -30,6 +31,10 @@ class PrepMetadata:
     dropped_na_rows: int
     split_timestamps: Dict[str, List[str]]
     split_timestamp_ranges: Dict[str, Dict[str, Optional[str]]]
+    merged_output_csv: Optional[str] = None
+    selected_feature_columns: Optional[List[str]] = None
+    excluded_feature_columns: Optional[List[str]] = None
+    extra_feature_sources: Optional[List[Dict[str, object]]] = None
 
 
 def _load_merged(path: Path) -> pd.DataFrame:
@@ -40,7 +45,43 @@ def _load_merged(path: Path) -> pd.DataFrame:
     return df
 
 
-def _clean_dataframe(df: pd.DataFrame, target_col: str) -> Tuple[pd.DataFrame, List[str], int]:
+def _apply_feature_filters(
+    df: pd.DataFrame,
+    target_col: str,
+    include: Optional[Sequence[str]],
+    exclude: Optional[Sequence[str]],
+) -> Tuple[pd.DataFrame, List[str]]:
+    filtered_cols: List[str]
+    if include:
+        matches: set[str] = set()
+        for pattern in include:
+            pattern_matches = fnmatch.filter(df.columns, pattern)
+            matches.update(pattern_matches)
+        missing = [p for p in include if not fnmatch.filter(df.columns, p)]
+        if missing:
+            raise KeyError(f"Included feature columns not found for patterns: {missing}")
+        filtered_cols = [c for c in df.columns if c == "timestamp" or c == target_col or c in matches]
+    else:
+        filtered_cols = list(df.columns)
+
+    if exclude:
+        exclude_matches: set[str] = set()
+        for pattern in exclude:
+            exclude_matches.update(fnmatch.filter(filtered_cols, pattern))
+        filtered_cols = [c for c in filtered_cols if c not in exclude_matches or c in ("timestamp", target_col)]
+
+    filtered_df = df.loc[:, filtered_cols]
+    selected = [c for c in filtered_cols if c not in {"timestamp", target_col}]
+    return filtered_df, selected
+
+
+def _clean_dataframe(
+    df: pd.DataFrame,
+    target_col: str,
+    include_features: Optional[Sequence[str]] = None,
+    exclude_features: Optional[Sequence[str]] = None,
+) -> Tuple[pd.DataFrame, List[str], int, List[str]]:
+    df, selected_columns = _apply_feature_filters(df, target_col, include_features, exclude_features)
     cols_to_numeric = [c for c in df.columns if c not in ('timestamp', target_col)]
     for c in cols_to_numeric:
         df[c] = pd.to_numeric(df[c], errors='coerce')
@@ -64,7 +105,7 @@ def _clean_dataframe(df: pd.DataFrame, target_col: str) -> Tuple[pd.DataFrame, L
     if 'timestamp' in df.columns:
         df = df.sort_values('timestamp').reset_index(drop=True)
 
-    return df, constant_cols, dropped_na_rows
+    return df, constant_cols, dropped_na_rows, selected_columns
 
 
 def _time_based_split(df: pd.DataFrame, cfg: SplitConfig) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -130,6 +171,9 @@ def prepare_splits(
     test_ratio: float,
     cutoff_start: Optional[str] = None,
     cutoff_mid: Optional[str] = None,
+    include_features: Optional[Sequence[str]] = None,
+    exclude_features: Optional[Sequence[str]] = None,
+    extra_feature_files: Optional[Sequence[dict]] = None,
 ) -> Path:
     """Programmatic API to prepare train/val/test splits.
 
@@ -141,7 +185,25 @@ def prepare_splits(
     if target not in merged.columns:
         raise ValueError(f"Target column '{target}' not found. Available: {len(merged.columns)} columns")
 
-    cleaned, dropped_constants, dropped_na_rows = _clean_dataframe(merged.copy(), target_col=target)
+    merged_with_extras = merged.copy()
+    extra_sources: List[dict] = []
+    if extra_feature_files:
+        for entry in extra_feature_files:
+            extra_df = _load_extra_feature_file(entry)
+            merged_with_extras = merged_with_extras.merge(extra_df, on="timestamp", how="left")
+            extra_sources.append({
+                "path": str(entry.get("path")),
+                "include": entry.get("include"),
+                "exclude": entry.get("exclude"),
+                "added_columns": [c for c in extra_df.columns if c != "timestamp"],
+            })
+
+    cleaned, dropped_constants, dropped_na_rows, selected_columns = _clean_dataframe(
+        merged_with_extras,
+        target_col=target,
+        include_features=include_features,
+        exclude_features=exclude_features,
+    )
     num_rows_after, num_cols_after = cleaned.shape
 
     split_cfg = SplitConfig(
@@ -196,8 +258,156 @@ def prepare_splits(
             'val': _ts_range(val),
             'test': _ts_range(test),
         },
+        selected_feature_columns=[c for c in selected_columns if c not in dropped_constants],
+        excluded_feature_columns=list(exclude_features or []),
+        extra_feature_sources=extra_sources or None,
     )
     with open(final_out_dir / 'prep_metadata.json', 'w') as f:
+        json.dump(asdict(meta), f, indent=2, default=str)
+
+    return final_out_dir
+
+
+def _load_feature_store(features_path: Path, targets_path: Path, target_col: str) -> pd.DataFrame:
+    features = pd.read_csv(features_path)
+    targets = pd.read_csv(targets_path)
+
+    if features.empty or targets.empty:
+        raise ValueError("Feature store files must not be empty")
+    if "timestamp" not in features.columns or "timestamp" not in targets.columns:
+        raise ValueError("Both features and targets files must include a 'timestamp' column")
+
+    features["timestamp"] = pd.to_datetime(features["timestamp"], utc=True)
+    targets["timestamp"] = pd.to_datetime(targets["timestamp"], utc=True)
+
+    merged = features.merge(targets, on="timestamp", how="inner", suffixes=("", "_target"))
+    if target_col not in merged.columns:
+        raise ValueError(f"Target column '{target_col}' not found after merging feature store data")
+    merged = merged.sort_values("timestamp").reset_index(drop=True)
+    return merged
+
+
+def _load_extra_feature_file(entry: dict) -> pd.DataFrame:
+    path = Path(entry.get("path"))
+    if not path.exists():
+        raise FileNotFoundError(f"Extra feature file not found: {path}")
+    df = pd.read_csv(path)
+    if "timestamp" not in df.columns:
+        raise ValueError(f"Extra feature file {path} missing 'timestamp' column")
+    include = entry.get("include")
+    exclude = entry.get("exclude")
+    df = df.copy()
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df, _ = _apply_feature_filters(df, target_col="__dummy__", include=include, exclude=exclude)
+    if "__dummy__" in df.columns:
+        df = df.drop(columns="__dummy__")
+    return df
+
+
+def prepare_splits_from_feature_store(
+    features_csv: Path,
+    targets_csv: Path,
+    output_dir: Path,
+    target: str,
+    train_ratio: float,
+    val_ratio: float,
+    test_ratio: float,
+    cutoff_start: Optional[str] = None,
+    cutoff_mid: Optional[str] = None,
+    *,
+    store_merged_csv: bool = True,
+    include_features: Optional[Sequence[str]] = None,
+    exclude_features: Optional[Sequence[str]] = None,
+    extra_feature_files: Optional[Sequence[dict]] = None,
+) -> Path:
+    merged = _load_feature_store(features_csv, targets_csv, target)
+
+    num_rows_before, num_cols_before = merged.shape
+    merged_with_extras = merged.copy()
+    extra_sources: List[dict] = []
+    if extra_feature_files:
+        for entry in extra_feature_files:
+            extra_df = _load_extra_feature_file(entry)
+            merged_with_extras = merged_with_extras.merge(extra_df, on="timestamp", how="left")
+            extra_sources.append({
+                "path": str(entry.get("path")),
+                "include": entry.get("include"),
+                "exclude": entry.get("exclude"),
+                "added_columns": [c for c in extra_df.columns if c != "timestamp"],
+            })
+
+    cleaned, dropped_constants, dropped_na_rows, selected_columns = _clean_dataframe(
+        merged_with_extras,
+        target_col=target,
+        include_features=include_features,
+        exclude_features=exclude_features,
+    )
+    num_rows_after, num_cols_after = cleaned.shape
+
+    split_cfg = SplitConfig(
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        test_ratio=test_ratio,
+        cutoff_dates=(cutoff_start, cutoff_mid),
+    )
+    train, val, test = _time_based_split(cleaned, split_cfg)
+
+    final_out_dir = output_dir.parent / f"{output_dir.name}_{target}"
+
+    _write_outputs(final_out_dir, target, train, val, test)
+
+    def _ts_list(df: pd.DataFrame) -> List[str]:
+        if "timestamp" in df.columns:
+            return df["timestamp"].astype(str).tolist()
+        return []
+
+    def _ts_range(df: pd.DataFrame) -> Dict[str, Optional[str]]:
+        if "timestamp" in df.columns and len(df) > 0:
+            return {
+                "min": str(df["timestamp"].min()),
+                "max": str(df["timestamp"].max()),
+            }
+        return {"min": None, "max": None}
+
+    merged_csv_path: Optional[Path] = None
+    if store_merged_csv:
+        merged_csv_path = final_out_dir / "merged_features_targets.csv"
+        merged_with_extras.to_csv(merged_csv_path, index=False)
+
+    meta = PrepMetadata(
+        input_path=f"features={features_csv};targets={targets_csv}",
+        num_rows_before=num_rows_before,
+        num_rows_after=num_rows_after,
+        num_features_before=num_cols_before,
+        num_features_after=num_cols_after,
+        target_column=target,
+        split_strategy="feature_store_ratio_time_order" if not (cutoff_start or cutoff_mid) else "feature_store_cutoff",
+        split_params={
+            "train_ratio": str(train_ratio),
+            "val_ratio": str(val_ratio),
+            "test_ratio": str(test_ratio),
+            "cutoff_start": str(cutoff_start),
+            "cutoff_mid": str(cutoff_mid),
+        },
+        dropped_constant_columns=dropped_constants,
+        dropped_na_rows=dropped_na_rows,
+        split_timestamps={
+            "train": _ts_list(train),
+            "val": _ts_list(val),
+            "test": _ts_list(test),
+        },
+        split_timestamp_ranges={
+            "train": _ts_range(train),
+            "val": _ts_range(val),
+            "test": _ts_range(test),
+        },
+        merged_output_csv=str(merged_csv_path) if merged_csv_path else None,
+        selected_feature_columns=[c for c in selected_columns if c not in dropped_constants],
+        excluded_feature_columns=list(exclude_features or []),
+        extra_feature_sources=extra_sources or None,
+    )
+    final_out_dir.mkdir(parents=True, exist_ok=True)
+    with open(final_out_dir / "prep_metadata.json", "w") as f:
         json.dump(asdict(meta), f, indent=2, default=str)
 
     return final_out_dir

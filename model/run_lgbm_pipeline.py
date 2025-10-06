@@ -83,7 +83,7 @@ def load_config(config_path: Path) -> Dict[str, Any]:
         config = json.load(f)
     
     # Validate required keys
-    required_keys = ['input_data', 'output_dir', 'target', 'split', 'model']
+    required_keys = ['output_dir', 'target', 'split', 'model']
     for key in required_keys:
         if key not in config:
             raise KeyError(f"Missing required config key: {key}")
@@ -135,7 +135,6 @@ def load_config(config_path: Path) -> Dict[str, Any]:
     config['target']['objective'] = normalized_obj
     
     # Convert paths to Path objects
-    config['input_data'] = Path(config['input_data'])
     config['output_dir'] = Path(config['output_dir'])
     # Optional training splits root directory (for reusable splits across runs)
     training_splits_dir = config.get('training_splits_dir')
@@ -161,12 +160,12 @@ def prepare_training_data(config: Dict[str, Any]) -> Path:
     # Import local module robustly regardless of CWD
     try:
         # Try as package import (namespace package)
-        from model.prepare_training_data import prepare_splits  # type: ignore
+        from model.prepare_training_data import prepare_splits, prepare_splits_from_feature_store  # type: ignore
     except Exception:
         # Fallback: add script directory to sys.path and import module directly
         import sys as _sys
         _sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from prepare_training_data import prepare_splits  # type: ignore
+        from prepare_training_data import prepare_splits, prepare_splits_from_feature_store  # type: ignore
 
     logging.info("Starting data preparation...")
 
@@ -186,19 +185,48 @@ def prepare_training_data(config: Dict[str, Any]) -> Path:
             raise FileNotFoundError(f"Existing splits missing required files: {missing} under {existing_dir}")
         prepared_dir = existing_dir
     else:
-        # Generate new splits into timestamped folder under training_splits_dir
         ts = config.get('_run_ts') or datetime.now().strftime("%Y%m%d_%H%M%S")
         base_prepared_out = splits_root / f"prepared_{ts}"
-        prepared_dir = prepare_splits(
-            input_path=config['input_data'],
-            output_dir=base_prepared_out,
-            target=target_name,
-            train_ratio=float(split_cfg.get('train_ratio', 0.7)),
-            val_ratio=float(split_cfg.get('val_ratio', 0.15)),
-            test_ratio=float(split_cfg.get('test_ratio', 0.15)),
-            cutoff_start=split_cfg.get('cutoff_start'),
-            cutoff_mid=split_cfg.get('cutoff_mid'),
-        )
+        features_path = config.get('feature_store', {}).get('features_csv')
+        targets_path = config.get('feature_store', {}).get('targets_csv')
+        feature_selection_cfg = config.get('feature_selection', {}) or {}
+        include_features = feature_selection_cfg.get('include')
+        exclude_features = feature_selection_cfg.get('exclude')
+
+        extra_feature_files = config.get('extra_feature_files', []) or []
+
+        if features_path and targets_path:
+            prepared_dir = prepare_splits_from_feature_store(
+                features_csv=Path(features_path),
+                targets_csv=Path(targets_path),
+                output_dir=base_prepared_out,
+                target=target_name,
+                train_ratio=float(split_cfg.get('train_ratio', 0.7)),
+                val_ratio=float(split_cfg.get('val_ratio', 0.15)),
+                test_ratio=float(split_cfg.get('test_ratio', 0.15)),
+                cutoff_start=split_cfg.get('cutoff_start'),
+                cutoff_mid=split_cfg.get('cutoff_mid'),
+                include_features=include_features,
+                exclude_features=exclude_features,
+                extra_feature_files=extra_feature_files,
+            )
+        else:
+            input_path = config.get('input_data')
+            if not input_path:
+                raise ValueError("Configuration must provide either feature_store paths or input_data")
+            prepared_dir = prepare_splits(
+                input_path=Path(input_path),
+                output_dir=base_prepared_out,
+                target=target_name,
+                train_ratio=float(split_cfg.get('train_ratio', 0.7)),
+                val_ratio=float(split_cfg.get('val_ratio', 0.15)),
+                test_ratio=float(split_cfg.get('test_ratio', 0.15)),
+                cutoff_start=split_cfg.get('cutoff_start'),
+                cutoff_mid=split_cfg.get('cutoff_mid'),
+                include_features=include_features,
+                exclude_features=exclude_features,
+                extra_feature_files=extra_feature_files,
+            )
 
     logging.info(f"Data preparation completed. Output: {prepared_dir}")
     return prepared_dir
@@ -895,13 +923,20 @@ def persist_results(config: Dict[str, Any], run_dir: Path, metrics: Dict[str, fl
     saved_best.setdefault('early_stopping_rounds', int(best_params.get('early_stopping_rounds', 0)))
     with open(run_dir / 'best_params.json', 'w') as f:
         json.dump(saved_best, f, indent=2)
+    paths_payload = {
+        'prepared_data_dir': str(data_dir),
+        'training_splits_dir': str(config.get('training_splits_dir', '')),
+        'output_dir': str(config['output_dir'])
+    }
+    if 'input_data' in config:
+        paths_payload['input_data'] = str(config['input_data'])
+    if 'feature_store' in config:
+        paths_payload['feature_store'] = json.loads(json.dumps(config['feature_store'], default=str))
+    if config.get('extra_feature_files'):
+        paths_payload['extra_feature_files'] = json.loads(json.dumps(config['extra_feature_files'], default=str))
+
     with open(run_dir / 'paths.json', 'w') as f:
-        json.dump({
-            'input_data': str(config['input_data']),
-            'prepared_data_dir': str(data_dir),
-            'training_splits_dir': str(config.get('training_splits_dir', '')),
-            'output_dir': str(config['output_dir'])
-        }, f, indent=2)
+        json.dump(paths_payload, f, indent=2)
     # Copy tuning log and prep metadata for full reproducibility
     tuning_csv = data_dir / 'tuning_trials.csv'
     if tuning_csv.exists():
