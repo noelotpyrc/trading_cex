@@ -49,6 +49,7 @@ def _apply_feature_filters(
     df: pd.DataFrame,
     target_col: str,
     include: Optional[Sequence[str]],
+    include_patterns: Optional[Sequence[str]],
     exclude: Optional[Sequence[str]],
 ) -> Tuple[pd.DataFrame, List[str]]:
     filtered_cols: List[str]
@@ -63,6 +64,18 @@ def _apply_feature_filters(
         filtered_cols = [c for c in df.columns if c == "timestamp" or c == target_col or c in matches]
     else:
         filtered_cols = list(df.columns)
+
+    if include_patterns:
+        pattern_matches: set[str] = set()
+        for pattern in include_patterns:
+            pattern_matches.update(fnmatch.filter(df.columns, pattern))
+        filtered_cols.extend([c for c in pattern_matches if c not in filtered_cols or c == target_col])
+
+    # Always drop auxiliary target columns (y_*) except for the chosen target
+    filtered_cols = [
+        c for c in filtered_cols
+        if c == "timestamp" or c == target_col or not c.startswith("y_")
+    ]
 
     if exclude:
         exclude_matches: set[str] = set()
@@ -79,9 +92,10 @@ def _clean_dataframe(
     df: pd.DataFrame,
     target_col: str,
     include_features: Optional[Sequence[str]] = None,
+    include_patterns: Optional[Sequence[str]] = None,
     exclude_features: Optional[Sequence[str]] = None,
 ) -> Tuple[pd.DataFrame, List[str], int, List[str]]:
-    df, selected_columns = _apply_feature_filters(df, target_col, include_features, exclude_features)
+    df, selected_columns = _apply_feature_filters(df, target_col, include_features, include_patterns, exclude_features)
     cols_to_numeric = [c for c in df.columns if c not in ('timestamp', target_col)]
     for c in cols_to_numeric:
         df[c] = pd.to_numeric(df[c], errors='coerce')
@@ -295,10 +309,17 @@ def _load_extra_feature_file(entry: dict) -> pd.DataFrame:
     if "timestamp" not in df.columns:
         raise ValueError(f"Extra feature file {path} missing 'timestamp' column")
     include = entry.get("include")
+    include_patterns = entry.get("include_patterns")
     exclude = entry.get("exclude")
     df = df.copy()
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    df, _ = _apply_feature_filters(df, target_col="__dummy__", include=include, exclude=exclude)
+    df, _ = _apply_feature_filters(
+        df,
+        target_col="__dummy__",
+        include=include,
+        include_patterns=include_patterns,
+        exclude=exclude,
+    )
     if "__dummy__" in df.columns:
         df = df.drop(columns="__dummy__")
     return df
@@ -340,6 +361,7 @@ def prepare_splits_from_feature_store(
         merged_with_extras,
         target_col=target,
         include_features=include_features,
+        include_patterns=include_features,
         exclude_features=exclude_features,
     )
     num_rows_after, num_cols_after = cleaned.shape

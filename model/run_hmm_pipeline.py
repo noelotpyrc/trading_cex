@@ -23,6 +23,11 @@ from hmmlearn.hmm import GaussianHMM
 import shutil
 from sklearn.preprocessing import StandardScaler
 
+# Hydra support removed – legacy CLI only
+DictConfig = Any  # type: ignore
+OmegaConf = None  # type: ignore
+hydra = None  # type: ignore
+
 
 def setup_logging(log_level: str = "INFO", logfile: Path | None = None) -> None:
     """Initialize logging to stdout and optional logfile."""
@@ -42,14 +47,33 @@ def load_config(path: Path) -> Dict[str, Any]:
         raise FileNotFoundError(f"Config not found: {path}")
     with open(path, 'r') as f:
         cfg = json.load(f)
-    # Basic validation
-    for key in ['input_data', 'output_dir', 'features', 'split', 'model']:
+
+    for key in ['input_data', 'output_dir', 'split', 'model']:
         if key not in cfg:
             raise KeyError(f"Missing config key: {key}")
+
     cfg['input_data'] = Path(cfg['input_data'])
     cfg['output_dir'] = Path(cfg['output_dir'])
-    # Defaults
-    feats = cfg['features']
+
+    feature_cfg = cfg.get('features')
+    include = None
+    if isinstance(feature_cfg, dict):
+        include = feature_cfg.get('include')
+    elif isinstance(feature_cfg, str):
+        feature_path = Path(feature_cfg)
+        if not feature_path.is_absolute():
+            feature_path = Path(__file__).resolve().parent.parent / feature_path
+        with open(feature_path, 'r') as f_list:
+            include = json.load(f_list)
+    elif feature_cfg is None:
+        default_list = Path(__file__).resolve().parent.parent / 'configs' / 'feature_lists' / 'binance_btcusdt_p60_hmm_1h.json'
+        with open(default_list, 'r') as f_list:
+            include = json.load(f_list)
+    else:
+        raise ValueError("features must be dict or path to JSON list")
+
+    cfg['features'] = {'include': include}
+
     split = cfg['split']
     split.setdefault('train_ratio', 0.7)
     split.setdefault('val_ratio', 0.15)
@@ -81,34 +105,17 @@ def load_config(path: Path) -> Dict[str, Any]:
     sel.setdefault('one_std_rule', False)  # if cv enabled, pick smallest K within 1 std err of best
     cfg['selection'] = sel
     return cfg
+
+
 def select_feature_columns(df_cols: List[str], cfg: Dict[str, Any]) -> List[str]:
     feats = cfg['features']
-    cols_set = set(df_cols)
-    # 1) Explicit list
-    explicit_cols = feats.get('columns')
-    if explicit_cols:
-        present = [c for c in explicit_cols if c in cols_set]
-        if not present:
-            raise ValueError("None of the requested features.columns are present in the input DataFrame")
-        return present
-    # 2) Regex matcher
-    pattern = feats.get('columns_regex')
-    if pattern:
-        import re
-        r = re.compile(str(pattern))
-        present = [c for c in df_cols if c != 'timestamp' and r.search(c)]
-        if not present:
-            raise ValueError(f"No columns matched features.columns_regex={pattern}")
-        return present
-    # 3) Suffix selector (e.g., columns ending with _1H)
-    suffix = feats.get('columns_suffix')
-    if suffix:
-        suf = f"_{suffix}"
-        present = [c for c in df_cols if c != 'timestamp' and c.endswith(suf)]
-        if not present:
-            raise ValueError(f"No columns matched features.columns_suffix={suffix}")
-        return present
-    raise ValueError("Provide one of features.columns, features.columns_regex, or features.columns_suffix to select training columns.")
+    include = feats.get('include')
+    if not include:
+        raise ValueError("features.include must provide a non-empty list of columns")
+    present = [c for c in include if c in df_cols]
+    if not present:
+        raise ValueError("None of the requested feature columns are present in the input data")
+    return present
 
 
 def load_features(path: Path, selected_cols: List[str]) -> pd.DataFrame:
@@ -404,16 +411,9 @@ def save_artifacts(out_dir: Path, model: GaussianHMM, scaler: StandardScaler, co
         json.dump(diagnostics, f, indent=2)
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description='Train a Gaussian HMM on v1/v2 features (config-driven)')
-    ap.add_argument('--config', type=Path, required=True)
-    ap.add_argument('--log-level', default='INFO')
-    args = ap.parse_args()
-
+def run_hmm_pipeline(cfg: Dict[str, Any], log_level: str = "INFO") -> Path:
     # First-stage logging to stdout only; will add file handler once run_dir is known
-    setup_logging(args.log_level)
-    cfg = load_config(args.config)
-    logging.info('Loaded config: %s', args.config)
+    setup_logging(log_level)
 
     # Load and select columns
     tmp_df = pd.read_csv(cfg['input_data'], nrows=1)
@@ -428,7 +428,7 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     # Reconfigure logging to also write to file
     file_handler = logging.FileHandler(str(run_dir / 'hmm_pipeline.log'))
-    file_handler.setLevel(getattr(logging, args.log_level.upper(), logging.INFO))
+    file_handler.setLevel(getattr(logging, log_level.upper(), logging.INFO))
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logging.getLogger().addHandler(file_handler)
     logging.info('Run directory: %s', run_dir)
@@ -575,6 +575,23 @@ def main() -> None:
             logging.info('Copied selection grid to %s', dst)
     except Exception as e:
         logging.warning('Failed to copy diagnostics to output_dir: %s', e)
+
+    return run_dir
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description='Train a Gaussian HMM on v1/v2 features (config-driven)')
+    ap.add_argument('--config', type=Path, required=True)
+    ap.add_argument('--log-level', default='INFO')
+    args = ap.parse_args()
+
+    # First-stage logging to stdout only; will add file handler once run_dir is known
+    setup_logging(args.log_level)
+    cfg = load_config(args.config)
+    logging.info('Loaded config: %s', args.config)
+
+    run_hmm_pipeline(cfg, args.log_level)
+    logging.info("HMM pipeline completed successfully")
 
 
 if __name__ == '__main__':

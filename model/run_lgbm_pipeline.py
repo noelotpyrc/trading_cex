@@ -4,7 +4,7 @@ LightGBM training pipeline runner.
 
 Executes the complete LightGBM model training workflow from a single config file:
 1. Data preparation (train/val/test split)
-2. Hyperparameter tuning 
+2. Hyperparameter tuning
 3. LightGBM model training with best parameters
 4. Model persistence and evaluation
 
@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import os
 import json
 import csv
 import logging
@@ -22,6 +23,11 @@ from itertools import product
 from pathlib import Path
 from typing import Dict, Any, Tuple, List, Optional
 
+# Add project root to Python path to allow imports from run/ directory
+_project_root = Path(__file__).resolve().parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
@@ -29,8 +35,13 @@ import shutil
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import roc_auc_score, log_loss
 
+# Hydra support removed – legacy CLI only
+DictConfig = Any  # type: ignore
+OmegaConf = None  # type: ignore
+hydra = None  # type: ignore
 
-def setup_logging(log_level: str = "INFO") -> None:
+
+def setup_logging(log_level: str = "INFO", log_dir_override: Optional[str | Path] = None) -> None:
     """Setup logging configuration.
 
     By default, writes logs to stdout and to a file under
@@ -38,7 +49,7 @@ def setup_logging(log_level: str = "INFO") -> None:
     If that location is unavailable, falls back to the current working directory.
     """
     # Determine log directory (create if needed), with graceful fallback
-    default_dir = Path('/Volumes/Extreme SSD/trading_data/cex/logs')
+    default_dir = Path(log_dir_override) if log_dir_override else Path('/Volumes/Extreme SSD/trading_data/cex/logs')
     try:
         default_dir.mkdir(parents=True, exist_ok=True)
         log_dir = default_dir
@@ -147,6 +158,41 @@ def load_config(config_path: Path) -> Dict[str, Any]:
         split_cfg['existing_dir'] = Path(split_cfg['existing_dir'])
         config['split'] = split_cfg
     
+    # Resolve feature selection
+    feature_cfg = config.get('feature_selection') or config.get('features')
+    include: List[str] = []
+    exclude: Optional[List[str]] = None
+    include_patterns: List[str] = []
+
+    if isinstance(feature_cfg, dict):
+        for list_path in feature_cfg.get('include_files', []) or []:
+            p = Path(list_path)
+            if not p.is_absolute():
+                p = Path(__file__).resolve().parent.parent / p
+            with open(p, 'r') as f:
+                include.extend(json.load(f))
+        include.extend(feature_cfg.get('include', []) or [])
+        include_patterns = feature_cfg.get('include_patterns', []) or []
+        exclude = feature_cfg.get('exclude')
+    elif isinstance(feature_cfg, str):
+        p = Path(feature_cfg)
+        if not p.is_absolute():
+            p = Path(__file__).resolve().parent.parent / p
+        with open(p, 'r') as f:
+            include.extend(json.load(f))
+    elif feature_cfg is None:
+        default_feature_list = Path(__file__).resolve().parent.parent / 'configs' / 'feature_lists' / 'binance_btcusdt_p60_default.json'
+        with open(default_feature_list, 'r') as f:
+            include.extend(json.load(f))
+    else:
+        raise ValueError("features must be dict or path to JSON list")
+
+    config['feature_selection'] = {
+        'include': include,
+        'include_patterns': include_patterns,
+        'exclude': exclude,
+    }
+
     return config
 
 
@@ -349,6 +395,7 @@ def _get_cv_config(model_cfg: Dict[str, Any]) -> Dict[str, Any]:
         'num_boost_round': int(cv.get('num_boost_round', 1000)),
         'early_stopping_rounds': int(cv.get('early_stopping_rounds', 100)),
         'log_period': max(0, log_period),
+        'min_best_iteration': int(cv.get('min_best_iteration', 0)),
     }
 
 
@@ -699,6 +746,15 @@ def _tune_bayesian(config: Dict[str, Any], data_dir: Path, search_space: Dict[st
                 return float('inf')
             mean_key = mean_keys[0]
         best_iter_idx = int(np.argmin(cv_results[mean_key]))
+        min_best_iteration = int(cv_cfg.get('min_best_iteration', 0))
+        if min_best_iteration > 0 and (best_iter_idx + 1) < min_best_iteration:
+            logging.info(
+                "[bayes] Trial %d rejected: best_iter=%d < min_best_iteration=%d",
+                trial.number,
+                best_iter_idx + 1,
+                min_best_iteration,
+            )
+            return float('inf')
         std_key = mean_key.replace('-mean', '-stdv')
         best_mean = float(cv_results[mean_key][best_iter_idx])
         best_stdv = float(cv_results.get(std_key, [np.nan] * (best_iter_idx + 1))[best_iter_idx])
@@ -756,6 +812,14 @@ def _tune_bayesian(config: Dict[str, Any], data_dir: Path, search_space: Dict[st
             mean_key = mean_keys[0]
     if mean_key in cv_results:
         best_iter_idx = int(np.argmin(cv_results[mean_key]))
+        min_best_iteration = int(cv_cfg.get('min_best_iteration', 0))
+        if min_best_iteration > 0 and (best_iter_idx + 1) < min_best_iteration:
+            logging.info(
+                "[bayes] Final CV result best_iter=%d < min_best_iteration=%d; keeping original num_boost_round",
+                best_iter_idx + 1,
+                min_best_iteration,
+            )
+            best_iter_idx = max(min_best_iteration - 1, best_iter_idx)
         if original_early_stopping_rounds > 0:
             # User wants early stopping - use high num_boost_round so early stopping can work
             best_params['num_boost_round'] = original_num_boost_round
@@ -948,7 +1012,20 @@ def persist_results(config: Dict[str, Any], run_dir: Path, metrics: Dict[str, fl
     return run_dir
 
 
-def main():
+def _normalize_objective(obj_cfg: Any) -> Dict[str, Any]:
+    if isinstance(obj_cfg, dict) and obj_cfg.get('type') == 'quantiles':
+        qs = obj_cfg.get('quantiles', [])
+        if not isinstance(qs, list) or len(qs) != 1:
+            raise ValueError("For quantile objective, provide exactly one quantile in 'quantiles'.")
+        return {'name': 'quantile', 'params': {'alpha': float(qs[0])}}
+    if isinstance(obj_cfg, dict) and 'name' in obj_cfg:
+        return {'name': str(obj_cfg['name']).lower(), 'params': obj_cfg.get('params', {})}
+    if isinstance(obj_cfg, str):
+        return {'name': obj_cfg.lower(), 'params': {}}
+    raise ValueError("target.objective must be either a string 'objective', or {name: ..., params: {...}}")
+
+
+def legacy_main():
     """Main pipeline execution."""
     parser = argparse.ArgumentParser(description="Run unified training pipeline")
     parser.add_argument('--config', type=Path, required=True,
@@ -967,10 +1044,12 @@ def main():
         # Load configuration
         config = load_config(args.config)
         logging.info(f"Loaded config from: {args.config}")
-        
+
+        logging.info("Running training without MLflow logging")
+
         # Step 1: Prepare training data
         data_dir = prepare_training_data(config)
-        
+
         # Step 2: Hyperparameter tuning
         tuned_best_params = tune_hyperparameters(config, data_dir)
         # Expose tuned params for persistence/metadata
@@ -979,19 +1058,18 @@ def main():
         # Choose final params source: tuned best vs fixed config params
         use_best_for_final = bool(config['model'].get('use_best_params_for_final', True))
         final_params = tuned_best_params if use_best_for_final else config['model'].get('params', {})
-        
+
         # Step 3: Train model with chosen final params
-        model, metrics, run_dir = train_model(config, data_dir, final_params)
-        
-        # Step 4: Persist pipeline metadata into the same run_dir
+        _, metrics, run_dir = train_model(config, data_dir, final_params)
+        # Step 4: Persist outputs locally
         run_dir = persist_results(config, run_dir, metrics, final_params, data_dir)
-        
+
         logging.info(f"Pipeline completed successfully! Results in: {run_dir}")
-        
+
     except Exception as e:
         logging.error(f"Pipeline failed: {str(e)}")
         raise
 
 
 if __name__ == '__main__':
-    main()
+    legacy_main()
