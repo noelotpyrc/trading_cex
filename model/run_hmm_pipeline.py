@@ -20,7 +20,6 @@ import joblib
 import numpy as np
 import pandas as pd
 from hmmlearn.hmm import GaussianHMM
-import shutil
 from sklearn.preprocessing import StandardScaler
 
 # Hydra support removed – legacy CLI only
@@ -104,6 +103,12 @@ def load_config(path: Path) -> Dict[str, Any]:
     sel.setdefault('cv_folds', 0)  # blocked CV folds on train (>=2 to enable)
     sel.setdefault('one_std_rule', False)  # if cv enabled, pick smallest K within 1 std err of best
     cfg['selection'] = sel
+    # Ensure model_type is recorded in artifacts for registrar consumption
+    try:
+        if isinstance(cfg.get('model'), dict):
+            cfg['model']['type'] = 'hmm'
+    except Exception:
+        pass
     return cfg
 
 
@@ -118,15 +123,23 @@ def select_feature_columns(df_cols: List[str], cfg: Dict[str, Any]) -> List[str]
     return present
 
 
-def load_features(path: Path, selected_cols: List[str]) -> pd.DataFrame:
+def load_features(path: Path, selected_cols: List[str]) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     df = pd.read_csv(path)
     if 'timestamp' not in df.columns:
         raise ValueError("Features CSV must include 'timestamp'")
     ts = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
     df['timestamp'] = ts.dt.tz_convert('UTC').dt.tz_localize(None)
     keep = ['timestamp'] + [c for c in selected_cols if c in df.columns]
-    df = df[keep].dropna().sort_values('timestamp').reset_index(drop=True)
-    return df
+    selected_df = df.loc[:, keep].sort_values('timestamp').reset_index(drop=True)
+    rows_after_selection = len(selected_df)
+    metadata = {
+        'input_path': str(path),
+        'rows_total': int(len(df)),
+        'rows_after_selection': int(rows_after_selection),
+        'selected_feature_columns': [c for c in selected_cols if c in selected_df.columns],
+        'missing_feature_columns': [c for c in selected_cols if c not in selected_df.columns],
+    }
+    return selected_df, metadata
 
 
 def time_split_indices(ts: pd.Series, train_ratio: float, val_ratio: float, test_ratio: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -141,21 +154,84 @@ def time_split_indices(ts: pd.Series, train_ratio: float, val_ratio: float, test
     return train_idx, val_idx, test_idx
 
 
+def _normalize_to_utc_naive_strings(values: List[Any]) -> set[str]:
+    """Normalize an iterable of timestamp-like values to UTC-naive 'YYYY-MM-DD HH:MM:SS' strings.
+
+    Accepts ISO strings with/without timezone, epoch ints/floats, or pandas Timestamps.
+    Returns a set of canonicalized strings for robust membership comparison.
+    """
+    try:
+        s = pd.to_datetime(pd.Series(list(values)), utc=True, errors='coerce')
+        # Ensure UTC then drop tz to naive
+        s = s.dt.tz_convert('UTC').dt.tz_localize(None)
+        return set(s.astype(str).tolist())
+    except Exception:
+        return set()
+
+
 def load_split_indices_from_meta(ts: pd.Series, meta_path: Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Load split indices from a LightGBM prepare_splits prep_metadata.json file.
 
-    Matches by exact string representation of timestamps to avoid tz pitfalls.
+    Robustly matches by normalizing both sides to UTC-naive timestamp strings.
     """
     meta = json.load(open(meta_path, 'r'))
-    split_ts = meta.get('split_timestamps', {})
-    train_set = set(split_ts.get('train', []) or [])
-    val_set = set(split_ts.get('val', []) or [])
-    test_set = set(split_ts.get('test', []) or [])
-    ts_str = ts.astype(str).tolist()
+    split_ts = meta.get('split_timestamps', {}) or {}
+    train_set = _normalize_to_utc_naive_strings(split_ts.get('train', []) or [])
+    val_set = _normalize_to_utc_naive_strings(split_ts.get('val', []) or [])
+    test_set = _normalize_to_utc_naive_strings(split_ts.get('test', []) or [])
+    ts_norm = pd.to_datetime(ts, errors='coerce', utc=True)
+    ts_norm = ts_norm.dt.tz_convert('UTC').dt.tz_localize(None)
+    ts_str = ts_norm.astype(str).tolist()
     train_idx = np.array([i for i, s in enumerate(ts_str) if s in train_set], dtype=int)
     val_idx = np.array([i for i, s in enumerate(ts_str) if s in val_set], dtype=int)
     test_idx = np.array([i for i, s in enumerate(ts_str) if s in test_set], dtype=int)
     return train_idx, val_idx, test_idx
+
+
+def _debug_log_timestamp_mismatch(ts: pd.Series, meta_path: Path) -> None:
+    """Log helpful diagnostics when split timestamp matching yields zero indices."""
+    try:
+        logging.error('Timestamp matching yielded 0/0/0. Dumping diagnostics:')
+        # Features side
+        ts_norm = pd.to_datetime(ts, errors='coerce', utc=True)
+        ts_norm = ts_norm.dt.tz_convert('UTC').dt.tz_localize(None)
+        features_count = int(len(ts_norm))
+        features_min = str(ts_norm.min()) if features_count else 'NA'
+        features_max = str(ts_norm.max()) if features_count else 'NA'
+        features_head = [str(x) for x in ts_norm.head(3).tolist()]
+        features_tail = [str(x) for x in ts_norm.tail(3).tolist()]
+        try:
+            freq_top = ts_norm.diff().dropna().value_counts().head(3).to_dict()
+            freq_top = {str(k): int(v) for k, v in freq_top.items()}
+        except Exception:
+            freq_top = {}
+        logging.error('features: count=%d min=%s max=%s head=%s tail=%s freq_top=%s',
+                      features_count, features_min, features_max, features_head, features_tail, freq_top)
+
+        # Metadata side
+        meta = json.load(open(meta_path, 'r'))
+        split_ts = meta.get('split_timestamps', {}) or {}
+        train_set = _normalize_to_utc_naive_strings(split_ts.get('train', []) or [])
+        val_set = _normalize_to_utc_naive_strings(split_ts.get('val', []) or [])
+        test_set = _normalize_to_utc_naive_strings(split_ts.get('test', []) or [])
+
+        def _set_stats(name: str, s: set[str]) -> None:
+            if not s:
+                logging.error('%s: count=0', name)
+                return
+            lst = sorted(list(s))
+            series = pd.to_datetime(pd.Series(lst), errors='coerce')
+            vmin = str(series.min())
+            vmax = str(series.max())
+            head = lst[:3]
+            tail = lst[-3:]
+            logging.error('%s: count=%d min=%s max=%s head=%s tail=%s', name, len(s), vmin, vmax, head, tail)
+
+        _set_stats('meta.train', train_set)
+        _set_stats('meta.val', val_set)
+        _set_stats('meta.test', test_set)
+    except Exception as e:
+        logging.error('Failed to dump timestamp mismatch diagnostics: %s', e)
 
 
 def hmm_param_count(n_states: int, n_features: int, covariance_type: str = 'diag') -> int:
@@ -404,6 +480,12 @@ def save_artifacts(out_dir: Path, model: GaussianHMM, scaler: StandardScaler, co
         return x
     with open(out_dir / 'config.json', 'w') as f:
         json.dump(_json_safe(config), f, indent=2)
+    # Also emit pipeline_config.json for alignment with registrar expectations
+    try:
+        with open(out_dir / 'pipeline_config.json', 'w') as f:
+            json.dump(_json_safe(config), f, indent=2)
+    except Exception:
+        pass
     with open(out_dir / 'metrics.json', 'w') as f:
         json.dump(metrics, f, indent=2)
     regimes_df.to_csv(out_dir / 'regimes.csv', index=False)
@@ -418,13 +500,19 @@ def run_hmm_pipeline(cfg: Dict[str, Any], log_level: str = "INFO") -> Path:
     # Load and select columns
     tmp_df = pd.read_csv(cfg['input_data'], nrows=1)
     feature_cols = select_feature_columns(list(tmp_df.columns), cfg)
-    df = load_features(cfg['input_data'], feature_cols)
-    logging.info('Loaded features: rows=%d cols=%d', len(df), len(feature_cols))
+    raw_df, feature_meta = load_features(cfg['input_data'], feature_cols)
+    rows_with_na_total = int(raw_df[feature_cols].isna().any(axis=1).sum())
+    feature_meta['rows_with_na_total'] = rows_with_na_total
+    logging.info(
+        'Loaded features: rows=%d cols=%d (rows_with_na=%d)',
+        len(raw_df),
+        len(feature_cols),
+        rows_with_na_total,
+    )
 
-    # Prepare run directory and attach file logging
+    # Prepare run directory and attach file logging (standardized name)
     ts_tag = datetime.now().strftime('%Y%m%d_%H%M%S')
-    cols_tag = f"cols{len(feature_cols)}"
-    run_dir = cfg['output_dir'] / f"run_{ts_tag}_{cols_tag}"
+    run_dir = cfg['output_dir'] / f"run_hmm_{ts_tag}"
     run_dir.mkdir(parents=True, exist_ok=True)
     # Reconfigure logging to also write to file
     file_handler = logging.FileHandler(str(run_dir / 'hmm_pipeline.log'))
@@ -434,25 +522,99 @@ def run_hmm_pipeline(cfg: Dict[str, Any], log_level: str = "INFO") -> Path:
     logging.info('Run directory: %s', run_dir)
 
     # Split: prefer prepared metadata (LightGBM) if provided
-    split_cfg = cfg.get('split', {})
-    tr = va = te = None
+    split_cfg = cfg.get('split', {}) or {}
     meta_path = None
     existing_dir = split_cfg.get('existing_dir')
     if existing_dir:
         meta_path = Path(existing_dir) / 'prep_metadata.json'
     meta_path = split_cfg.get('prep_metadata') or meta_path
+
     if meta_path:
         meta_path = Path(meta_path)
         if not meta_path.exists():
             raise FileNotFoundError(f"prep_metadata.json not found at: {meta_path}")
-        tr, va, te = load_split_indices_from_meta(df['timestamp'], meta_path)
-        logging.info('Loaded split indices from %s | sizes train/val/test: %d/%d/%d', meta_path, len(tr), len(va), len(te))
+        tr_raw, va_raw, te_raw = load_split_indices_from_meta(raw_df['timestamp'], meta_path)
+        if (len(tr_raw) == 0) and (len(va_raw) == 0) and (len(te_raw) == 0):
+            _debug_log_timestamp_mismatch(raw_df['timestamp'], meta_path)
+            raise ValueError(
+                f"No matching timestamps found between features and prep_metadata: {meta_path}. "
+                f"Ensure both are normalized to UTC and share the same sampling schedule."
+            )
+        logging.info(
+            'Loaded split indices from %s | sizes train/val/test: %d/%d/%d',
+            meta_path,
+            len(tr_raw),
+            len(va_raw),
+            len(te_raw),
+        )
     else:
-        tr, va, te = time_split_indices(df['timestamp'], cfg['split']['train_ratio'], cfg['split']['val_ratio'], cfg['split']['test_ratio'])
+        tr_raw, va_raw, te_raw = time_split_indices(
+            raw_df['timestamp'],
+            float(split_cfg.get('train_ratio', 0.7)),
+            float(split_cfg.get('val_ratio', 0.15)),
+            float(split_cfg.get('test_ratio', 0.15)),
+        )
+
+    combined_indices_raw = [arr for arr in (tr_raw, va_raw, te_raw) if len(arr)]
+    union_raw = np.unique(np.concatenate(combined_indices_raw)) if combined_indices_raw else np.array([], dtype=int)
+    if union_raw.size == 0:
+        raise ValueError('Split configuration yielded zero rows across train/val/test')
+
+    trimmed_df = raw_df.iloc[union_raw].reset_index(drop=True)
+    trimmed_outside = int(len(raw_df) - len(trimmed_df))
+    if trimmed_outside > 0:
+        logging.info('Trimmed %d rows outside split ranges prior to modeling', trimmed_outside)
+
+    na_mask = trimmed_df[feature_cols].isna().any(axis=1)
+    if na_mask.any():
+        bad_ts = trimmed_df.loc[na_mask, 'timestamp'].astype(str).head(5).tolist()
+        raise ValueError(f'Encountered NaNs within split-aligned data; example timestamps: {bad_ts}')
+
+    index_map = {old_idx: new_idx for new_idx, old_idx in enumerate(union_raw)}
+
+    def _map_indices(indices: np.ndarray) -> np.ndarray:
+        if len(indices) == 0:
+            return np.zeros(0, dtype=int)
+        return np.array([index_map[i] for i in indices], dtype=int)
+
+    tr = _map_indices(tr_raw)
+    va = _map_indices(va_raw)
+    te = _map_indices(te_raw)
+
+    def _assert_split_no_nan(name: str, indices: np.ndarray) -> None:
+        if len(indices) == 0:
+            return
+        subset = trimmed_df.iloc[indices][feature_cols]
+        if subset.isna().any().any():
+            bad_mask = subset.isna().any(axis=1)
+            bad_ts = trimmed_df.iloc[indices].loc[bad_mask, 'timestamp'].astype(str).head(5).tolist()
+            raise ValueError(f'{name} split contains NaNs after trimming; example timestamps: {bad_ts}')
+
+    _assert_split_no_nan('train', tr)
+    _assert_split_no_nan('val', va)
+    _assert_split_no_nan('test', te)
+
+    final_rows = int(len(trimmed_df))
+    logging.info(
+        'Row tally | original=%d trimmed_to_splits=%d train=%d val=%d test=%d final=%d',
+        len(raw_df),
+        final_rows,
+        len(tr),
+        len(va),
+        len(te),
+        final_rows,
+    )
+
+    feature_meta['rows_trimmed_outside_splits'] = trimmed_outside
+    feature_meta['rows_after_trim_to_splits'] = final_rows
+    feature_meta['rows_by_split'] = {'train': int(len(tr)), 'val': int(len(va)), 'test': int(len(te))}
+    feature_meta['final_model_rows'] = final_rows
+
+    df = trimmed_df
+    ts_all = df['timestamp']
     X_train = df.iloc[tr][feature_cols].values
     X_val = df.iloc[va][feature_cols].values
     X_test = df.iloc[te][feature_cols].values
-    ts_all = df['timestamp']
 
     # Scale: fit on train only to prevent leakage
     scaler = StandardScaler()
@@ -531,10 +693,99 @@ def run_hmm_pipeline(cfg: Dict[str, Any], log_level: str = "INFO") -> Path:
     X_all_s = scaler.transform(df[feature_cols].values)
     regimes_df, diagnostics = evaluate(model, X_all_s, ts_all)
 
-    # Persist split map alongside regimes for audit
-    split_map = pd.DataFrame({'timestamp': ts_all.astype(str), 'split': ['train'] * len(ts_all)})
-    split_map.loc[va, 'split'] = 'val'
-    split_map.loc[te, 'split'] = 'test'
+    # Persist prep metadata describing the split and feature processing
+    def _sorted_indices(indices: np.ndarray) -> np.ndarray:
+        if isinstance(indices, np.ndarray):
+            return np.sort(indices.astype(int))
+        return np.sort(np.asarray(indices, dtype=int))
+
+    def _ts_list(indices: np.ndarray) -> List[str]:
+        if len(indices) == 0:
+            return []
+        subset = df.iloc[_sorted_indices(indices)]
+        return subset['timestamp'].astype(str).tolist()
+
+    def _ts_range(indices: np.ndarray) -> Dict[str, Any]:
+        if len(indices) == 0:
+            return {'min': None, 'max': None}
+        subset = df.iloc[_sorted_indices(indices)]
+        series = subset['timestamp']
+        return {'min': str(series.min()), 'max': str(series.max())}
+
+    split_timestamps = {
+        'train': _ts_list(tr),
+        'val': _ts_list(va),
+        'test': _ts_list(te),
+    }
+    split_ranges = {
+        'train': _ts_range(tr),
+        'val': _ts_range(va),
+        'test': _ts_range(te),
+    }
+    split_counts = {
+        'train': int(len(tr)),
+        'val': int(len(va)),
+        'test': int(len(te)),
+    }
+    assigned_idx = set(np.concatenate([_sorted_indices(tr), _sorted_indices(va), _sorted_indices(te)]) if len(df) else [])
+    all_idx = set(range(len(df)))
+    unknown_idx = sorted(all_idx - assigned_idx)
+    if unknown_idx:
+        unknown_array = np.asarray(unknown_idx, dtype=int)
+        split_timestamps['unknown'] = _ts_list(unknown_array)
+        split_ranges['unknown'] = _ts_range(unknown_array)
+        split_counts['unknown'] = int(len(unknown_idx))
+
+    prep_metadata = {
+        'pipeline': 'run_hmm_pipeline',
+        'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'input_data': str(cfg['input_data']),
+        'feature_summary': {
+            'selected_feature_columns': feature_meta.get('selected_feature_columns', feature_cols),
+            'missing_feature_columns': feature_meta.get('missing_feature_columns', []),
+            'n_features': len(feature_cols),
+        },
+        'row_counts': {
+            'rows_total': feature_meta.get('rows_total', len(raw_df)),
+            'rows_after_selection': feature_meta.get('rows_after_selection', len(raw_df)),
+            'rows_with_na_total': feature_meta.get('rows_with_na_total', 0),
+            'rows_trimmed_outside_splits': feature_meta.get('rows_trimmed_outside_splits', 0),
+            'rows_after_trim_to_splits': feature_meta.get('rows_after_trim_to_splits', final_rows),
+            'rows_by_split': feature_meta.get('rows_by_split', {'train': len(tr), 'val': len(va), 'test': len(te)}),
+            'final_model_rows': feature_meta.get('final_model_rows', final_rows),
+        },
+        'split': {
+            'source': 'prep_metadata' if meta_path else 'ratio_time_order',
+            'source_path': str(meta_path) if meta_path else None,
+            'counts': split_counts,
+            'timestamp_ranges': split_ranges,
+            'timestamps': split_timestamps,
+            'rows_accounted_for': int(
+                sum(split_counts.get(k, 0) for k in ('train', 'val', 'test'))
+            ),
+            'final_fit_on': str(final_fit_on),
+        },
+    }
+    prep_meta_path = run_dir / 'prep_metadata.json'
+    with open(prep_meta_path, 'w') as f:
+        json.dump(prep_metadata, f, indent=2)
+    logging.info('Saved prep metadata to %s', prep_meta_path)
+
+    split_cfg_meta = cfg.get('split', {}) or {}
+    split_cfg_meta['source'] = 'prep_metadata' if meta_path else 'ratio_time_order'
+    if meta_path:
+        split_cfg_meta['prep_metadata'] = str(meta_path)
+    split_cfg_meta['hmm_prep_metadata'] = str(prep_meta_path)
+    split_cfg_meta['counts'] = {k: int(v) for k, v in split_counts.items()}
+    split_cfg_meta['timestamp_ranges'] = split_ranges
+    split_cfg_meta['timestamps'] = split_timestamps
+    split_cfg_meta['rows_total'] = int(feature_meta.get('rows_total', len(raw_df)))
+    split_cfg_meta['rows_with_na_total'] = int(feature_meta.get('rows_with_na_total', 0))
+    split_cfg_meta['rows_trimmed_outside_splits'] = int(feature_meta.get('rows_trimmed_outside_splits', 0))
+    split_cfg_meta['rows_after_trim_to_splits'] = int(feature_meta.get('rows_after_trim_to_splits', final_rows))
+    split_cfg_meta['rows_by_split'] = {k: int(v) for k, v in (feature_meta.get('rows_by_split') or {'train': len(tr), 'val': len(va), 'test': len(te)}).items()}
+    split_cfg_meta['final_model_rows'] = int(feature_meta.get('final_model_rows', final_rows))
+    cfg['split'] = split_cfg_meta
 
     # Metrics
     metrics = {
@@ -550,31 +801,18 @@ def run_hmm_pipeline(cfg: Dict[str, Any], log_level: str = "INFO") -> Path:
         'n_features': len(feature_cols),
         'feature_cols': feature_cols,
         'final_occupancy': occ_final,
+        'split_counts': {k: int(v) for k, v in split_counts.items()},
+        'rows_with_na_total': int(feature_meta.get('rows_with_na_total', 0)),
+        'rows_trimmed_outside_splits': int(feature_meta.get('rows_trimmed_outside_splits', 0)),
+        'rows_after_trim_to_splits': int(feature_meta.get('rows_after_trim_to_splits', final_rows)),
+        'final_model_rows': int(feature_meta.get('final_model_rows', final_rows)),
     }
 
     # Save
     save_artifacts(run_dir, model, scaler, cfg, metrics, regimes_df, diagnostics)
-    # write split map
-    split_map.to_csv(run_dir / 'split_map.csv', index=False)
     logging.info('Saved artifacts to %s', run_dir)
 
-    # Also persist key diagnostics to the top-level output_dir for convenience
-    try:
-        out_root = Path(cfg['output_dir'])
-        out_root.mkdir(parents=True, exist_ok=True)
-        run_name = run_dir.name
-        log_src = run_dir / 'hmm_pipeline.log'
-        grid_src = run_dir / 'selection_grid.csv'
-        if log_src.exists():
-            dst = out_root / f"{run_name}_hmm_pipeline.log"
-            shutil.copy2(log_src, dst)
-            logging.info('Copied log to %s', dst)
-        if grid_src.exists():
-            dst = out_root / f"{run_name}_selection_grid.csv"
-            shutil.copy2(grid_src, dst)
-            logging.info('Copied selection grid to %s', dst)
-    except Exception as e:
-        logging.warning('Failed to copy diagnostics to output_dir: %s', e)
+    # No longer duplicate logs outside run_dir; artifacts remain only under run_dir
 
     return run_dir
 

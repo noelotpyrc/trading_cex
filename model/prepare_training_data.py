@@ -94,6 +94,8 @@ def _clean_dataframe(
     include_features: Optional[Sequence[str]] = None,
     include_patterns: Optional[Sequence[str]] = None,
     exclude_features: Optional[Sequence[str]] = None,
+    *,
+    warmup_rows: int = 0,
 ) -> Tuple[pd.DataFrame, List[str], int, List[str]]:
     df, selected_columns = _apply_feature_filters(df, target_col, include_features, include_patterns, exclude_features)
     cols_to_numeric = [c for c in df.columns if c not in ('timestamp', target_col)]
@@ -109,6 +111,16 @@ def _clean_dataframe(
             constant_cols.append(c)
     if constant_cols:
         df = df.drop(columns=constant_cols)
+
+    if 'timestamp' in df.columns:
+        df = df.sort_values('timestamp').reset_index(drop=True)
+
+    warmup_rows = max(int(warmup_rows or 0), 0)
+    if warmup_rows:
+        if len(df) > warmup_rows:
+            df = df.iloc[warmup_rows:].reset_index(drop=True)
+        else:
+            df = df.iloc[0:0].reset_index(drop=True)
 
     before_rows = len(df)
     # Only enforce non-NA on features (exclude all y_* leakage columns) plus the selected target
@@ -188,6 +200,7 @@ def prepare_splits(
     include_features: Optional[Sequence[str]] = None,
     exclude_features: Optional[Sequence[str]] = None,
     extra_feature_files: Optional[Sequence[dict]] = None,
+    warmup_rows: int = 0,
 ) -> Path:
     """Programmatic API to prepare train/val/test splits.
 
@@ -217,6 +230,7 @@ def prepare_splits(
         target_col=target,
         include_features=include_features,
         exclude_features=exclude_features,
+        warmup_rows=warmup_rows,
     )
     num_rows_after, num_cols_after = cleaned.shape
 
@@ -259,6 +273,7 @@ def prepare_splits(
             'test_ratio': str(test_ratio),
             'cutoff_start': str(cutoff_start),
             'cutoff_mid': str(cutoff_mid),
+            'warmup_rows': str(warmup_rows),
         },
         dropped_constant_columns=dropped_constants,
         dropped_na_rows=dropped_na_rows,
@@ -340,6 +355,7 @@ def prepare_splits_from_feature_store(
     include_features: Optional[Sequence[str]] = None,
     exclude_features: Optional[Sequence[str]] = None,
     extra_feature_files: Optional[Sequence[dict]] = None,
+    warmup_rows: int = 0,
 ) -> Path:
     merged = _load_feature_store(features_csv, targets_csv, target)
 
@@ -363,6 +379,7 @@ def prepare_splits_from_feature_store(
         include_features=include_features,
         include_patterns=include_features,
         exclude_features=exclude_features,
+        warmup_rows=warmup_rows,
     )
     num_rows_after, num_cols_after = cleaned.shape
 
@@ -410,6 +427,7 @@ def prepare_splits_from_feature_store(
             "test_ratio": str(test_ratio),
             "cutoff_start": str(cutoff_start),
             "cutoff_mid": str(cutoff_mid),
+            "warmup_rows": str(warmup_rows),
         },
         dropped_constant_columns=dropped_constants,
         dropped_na_rows=dropped_na_rows,
@@ -445,6 +463,7 @@ def main() -> None:
     parser.add_argument('--test-ratio', type=float, default=0.15)
     parser.add_argument('--cutoff-start', type=str, default=None, help='Optional timestamp cutoff for train end (e.g., 2024-12-31)')
     parser.add_argument('--cutoff-mid', type=str, default=None, help='Optional timestamp cutoff to split val/test (e.g., 2025-06-01)')
+    parser.add_argument('--warmup-rows', type=int, default=0, help='Drop the first N rows (after sorting by timestamp) before NA cleanup')
     args = parser.parse_args()
 
     final_out_dir = prepare_splits(
@@ -456,6 +475,7 @@ def main() -> None:
         test_ratio=args.test_ratio,
         cutoff_start=args.cutoff_start,
         cutoff_mid=args.cutoff_mid,
+        warmup_rows=args.warmup_rows,
     )
 
     print(f"Prepared data written to: {final_out_dir}")
@@ -470,5 +490,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
-

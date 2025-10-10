@@ -219,6 +219,7 @@ def prepare_training_data(config: Dict[str, Any]) -> Path:
     split_cfg = config.get('split', {}) or {}
     splits_root: Path = config['training_splits_dir']
     splits_root.mkdir(parents=True, exist_ok=True)
+    warmup_rows = int(split_cfg.get('warmup_rows', 0) or 0)
 
     # Reuse existing splits if provided
     existing_dir = split_cfg.get('existing_dir')
@@ -255,6 +256,7 @@ def prepare_training_data(config: Dict[str, Any]) -> Path:
                 include_features=include_features,
                 exclude_features=exclude_features,
                 extra_feature_files=extra_feature_files,
+                warmup_rows=warmup_rows,
             )
         else:
             input_path = config.get('input_data')
@@ -272,6 +274,7 @@ def prepare_training_data(config: Dict[str, Any]) -> Path:
                 include_features=include_features,
                 exclude_features=exclude_features,
                 extra_feature_files=extra_feature_files,
+                warmup_rows=warmup_rows,
             )
 
     logging.info(f"Data preparation completed. Output: {prepared_dir}")
@@ -341,6 +344,14 @@ def _evaluate_metric(name: str, y_true: np.ndarray, y_pred: np.ndarray, alpha: O
         return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
     if name == 'mae' or name == 'l1':
         return float(np.mean(np.abs(y_true - y_pred)))
+    if name == 'corr':
+        try:
+            # Handle constant arrays which result in nan
+            if np.std(y_true) == 0.0 or np.std(y_pred) == 0.0:
+                return float('nan')
+            return float(np.corrcoef(y_true, y_pred)[0, 1])
+        except Exception:
+            return float('nan')
     if name == 'pinball_loss':
         if alpha is None:
             raise ValueError("pinball_loss requires alpha for quantile evaluation")
@@ -889,15 +900,25 @@ def train_model(config: Dict[str, Any], data_dir: Path, best_params: Dict[str, A
         len(X_train), len(X_val), len(X_test),
     )
 
-    # Evaluate on all splits
-    primary = _primary_metric_for_objective(objective_name, config['model'].get('eval_metrics'))
-    alpha = objective_params.get('alpha') if objective_name == 'quantile' else None
-    metrics = {
-        f'{primary}_train': _evaluate_metric(primary, y_train.values, preds['train'], alpha=alpha),
-        f'{primary}_val': _evaluate_metric(primary, y_val.values, preds['val'], alpha=alpha),
-    }
+    # Evaluate on all splits (flexible metrics by objective)
     preds_test = booster.predict(X_test, num_iteration=booster.best_iteration)
-    metrics[f'{primary}_test'] = _evaluate_metric(primary, y_test.values, preds_test, alpha=alpha)
+    metrics: Dict[str, float] = {}
+    if objective_name == 'binary':
+        # Classification: logloss + auc
+        metrics['logloss_train'] = _evaluate_metric('binary_logloss', y_train.values, preds['train'])
+        metrics['logloss_val'] = _evaluate_metric('binary_logloss', y_val.values, preds['val'])
+        metrics['logloss_test'] = _evaluate_metric('binary_logloss', y_test.values, preds_test)
+        metrics['auc_train'] = _evaluate_metric('auc', y_train.values, preds['train'])
+        metrics['auc_val'] = _evaluate_metric('auc', y_val.values, preds['val'])
+        metrics['auc_test'] = _evaluate_metric('auc', y_test.values, preds_test)
+    else:
+        # Regression-like: rmse + correlation
+        metrics['rmse_train'] = _evaluate_metric('rmse', y_train.values, preds['train'])
+        metrics['rmse_val'] = _evaluate_metric('rmse', y_val.values, preds['val'])
+        metrics['rmse_test'] = _evaluate_metric('rmse', y_test.values, preds_test)
+        metrics['corr_train'] = _evaluate_metric('corr', y_train.values, preds['train'])
+        metrics['corr_val'] = _evaluate_metric('corr', y_val.values, preds['val'])
+        metrics['corr_test'] = _evaluate_metric('corr', y_test.values, preds_test)
 
     # Persist artifacts
     run_dir = _make_run_dir(config, data_dir)
@@ -931,12 +952,22 @@ def train_model(config: Dict[str, Any], data_dir: Path, best_params: Dict[str, A
     })
     fi_df.sort_values('importance_gain', ascending=False).to_csv(run_dir / 'feature_importance.csv', index=False)
 
-    logging.info(
-        "LightGBM training completed. %s_train=%.6f, %s_val=%.6f, %s_test=%.6f",
-        primary, metrics.get(f"{primary}_train", float('nan')),
-        primary, metrics.get(f"{primary}_val", float('nan')),
-        primary, metrics.get(f"{primary}_test", float('nan')),
-    )
+    if objective_name == 'binary':
+        logging.info(
+            "LightGBM training completed. logloss_val=%.6f, auc_val=%.6f; logloss_test=%.6f, auc_test=%.6f",
+            metrics.get('logloss_val', float('nan')),
+            metrics.get('auc_val', float('nan')),
+            metrics.get('logloss_test', float('nan')),
+            metrics.get('auc_test', float('nan')),
+        )
+    else:
+        logging.info(
+            "LightGBM training completed. rmse_val=%.6f, corr_val=%.6f; rmse_test=%.6f, corr_test=%.6f",
+            metrics.get('rmse_val', float('nan')),
+            metrics.get('corr_val', float('nan')),
+            metrics.get('rmse_test', float('nan')),
+            metrics.get('corr_test', float('nan')),
+        )
     return booster, metrics, run_dir
 
 
