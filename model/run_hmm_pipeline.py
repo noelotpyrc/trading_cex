@@ -54,24 +54,40 @@ def load_config(path: Path) -> Dict[str, Any]:
     cfg['input_data'] = Path(cfg['input_data'])
     cfg['output_dir'] = Path(cfg['output_dir'])
 
-    feature_cfg = cfg.get('features')
-    include = None
-    if isinstance(feature_cfg, dict):
-        include = feature_cfg.get('include')
-    elif isinstance(feature_cfg, str):
-        feature_path = Path(feature_cfg)
-        if not feature_path.is_absolute():
-            feature_path = Path(__file__).resolve().parent.parent / feature_path
-        with open(feature_path, 'r') as f_list:
-            include = json.load(f_list)
-    elif feature_cfg is None:
-        default_list = Path(__file__).resolve().parent.parent / 'configs' / 'feature_lists' / 'binance_btcusdt_p60_hmm_1h.json'
-        with open(default_list, 'r') as f_list:
-            include = json.load(f_list)
-    else:
-        raise ValueError("features must be dict or path to JSON list")
+    # Resolve feature selection (unified with LGBM pipeline)
+    feature_cfg = cfg.get('feature_selection') or cfg.get('features')  # Support both for backward compatibility
+    include: List[str] = []
+    exclude: Optional[List[str]] = None
+    include_patterns: List[str] = []
 
-    cfg['features'] = {'include': include}
+    if isinstance(feature_cfg, dict):
+        for list_path in feature_cfg.get('include_files', []) or []:
+            p = Path(list_path)
+            if not p.is_absolute():
+                p = Path(__file__).resolve().parent.parent / p
+            with open(p, 'r') as f:
+                include.extend(json.load(f))
+        include.extend(feature_cfg.get('include', []) or [])
+        include_patterns = feature_cfg.get('include_patterns', []) or []
+        exclude = feature_cfg.get('exclude')
+    elif isinstance(feature_cfg, str):
+        p = Path(feature_cfg)
+        if not p.is_absolute():
+            p = Path(__file__).resolve().parent.parent / p
+        with open(p, 'r') as f:
+            include.extend(json.load(f))
+    elif feature_cfg is None:
+        default_feature_list = Path(__file__).resolve().parent.parent / 'configs' / 'feature_lists' / 'binance_btcusdt_p60_hmm_1h.json'
+        with open(default_feature_list, 'r') as f:
+            include.extend(json.load(f))
+    else:
+        raise ValueError("feature_selection/features must be dict or path to JSON list")
+
+    cfg['features'] = {
+        'include': include,
+        'include_patterns': include_patterns,
+        'exclude': exclude,
+    }
 
     split = cfg['split']
     split.setdefault('train_ratio', 0.7)
@@ -113,14 +129,49 @@ def load_config(path: Path) -> Dict[str, Any]:
 
 
 def select_feature_columns(df_cols: List[str], cfg: Dict[str, Any]) -> List[str]:
+    """Select feature columns using unified feature selection logic (same as LGBM pipeline)."""
+    import fnmatch
+    
     feats = cfg['features']
-    include = feats.get('include')
-    if not include:
-        raise ValueError("features.include must provide a non-empty list of columns")
-    present = [c for c in include if c in df_cols]
-    if not present:
-        raise ValueError("None of the requested feature columns are present in the input data")
-    return present
+    include = feats.get('include', [])
+    include_patterns = feats.get('include_patterns', [])
+    exclude = feats.get('exclude', [])
+    
+    if not include and not include_patterns:
+        raise ValueError("features.include or features.include_patterns must provide a non-empty list of columns/patterns")
+    
+    # Apply include filters
+    filtered_cols: List[str] = []
+    if include:
+        matches: set[str] = set()
+        for pattern in include:
+            pattern_matches = fnmatch.filter(df_cols, pattern)
+            matches.update(pattern_matches)
+        missing = [p for p in include if not fnmatch.filter(df_cols, p)]
+        if missing:
+            raise KeyError(f"Included feature columns not found for patterns: {missing}")
+        filtered_cols = [c for c in df_cols if c in matches]
+    else:
+        filtered_cols = list(df_cols)
+
+    # Apply include_patterns (additive)
+    if include_patterns:
+        pattern_matches: set[str] = set()
+        for pattern in include_patterns:
+            pattern_matches.update(fnmatch.filter(df_cols, pattern))
+        filtered_cols.extend([c for c in pattern_matches if c not in filtered_cols])
+
+    # Apply exclude filters
+    if exclude:
+        exclude_matches: set[str] = set()
+        for pattern in exclude:
+            exclude_matches.update(fnmatch.filter(filtered_cols, pattern))
+        filtered_cols = [c for c in filtered_cols if c not in exclude_matches]
+    
+    if not filtered_cols:
+        raise ValueError("No feature columns remain after applying feature selection filters")
+    
+    return filtered_cols
 
 
 def load_features(path: Path, selected_cols: List[str]) -> Tuple[pd.DataFrame, Dict[str, Any]]:

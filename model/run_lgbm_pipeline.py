@@ -238,6 +238,7 @@ def prepare_training_data(config: Dict[str, Any]) -> Path:
         targets_path = config.get('feature_store', {}).get('targets_csv')
         feature_selection_cfg = config.get('feature_selection', {}) or {}
         include_features = feature_selection_cfg.get('include')
+        include_patterns = feature_selection_cfg.get('include_patterns')
         exclude_features = feature_selection_cfg.get('exclude')
 
         extra_feature_files = config.get('extra_feature_files', []) or []
@@ -254,6 +255,7 @@ def prepare_training_data(config: Dict[str, Any]) -> Path:
                 cutoff_start=split_cfg.get('cutoff_start'),
                 cutoff_mid=split_cfg.get('cutoff_mid'),
                 include_features=include_features,
+                include_patterns=include_patterns,
                 exclude_features=exclude_features,
                 extra_feature_files=extra_feature_files,
                 warmup_rows=warmup_rows,
@@ -272,6 +274,7 @@ def prepare_training_data(config: Dict[str, Any]) -> Path:
                 cutoff_start=split_cfg.get('cutoff_start'),
                 cutoff_mid=split_cfg.get('cutoff_mid'),
                 include_features=include_features,
+                include_patterns=include_patterns,
                 exclude_features=exclude_features,
                 extra_feature_files=extra_feature_files,
                 warmup_rows=warmup_rows,

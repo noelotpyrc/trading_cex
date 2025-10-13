@@ -111,9 +111,26 @@ def main() -> None:
         if sel:
             crit = str(sel.get("criterion", "icl")).lower()
             params["primary_metric"] = crit
-    # feature_list_id: from config if present else NA
-    feature_list_id = cfg.get("feature_list_id")
-    params["feature_list_id"] = str(feature_list_id) if feature_list_id else "NA"
+    # feature_selection params: include all fields if present
+    feature_selection = cfg.get("feature_selection")
+    if isinstance(feature_selection, dict):
+        if feature_selection.get("include_files"):
+            # Store as comma-separated list for readability
+            include_files = feature_selection.get("include_files")
+            params["feature_selection.include_files"] = ",".join(include_files) if isinstance(include_files, list) else str(include_files)
+        if feature_selection.get("include"):
+            # Store as comma-separated list for readability
+            include = feature_selection.get("include")
+            params["feature_selection.include"] = ",".join(include) if isinstance(include, list) else str(include)
+        if feature_selection.get("include_patterns"):
+            # Store as comma-separated list for readability
+            include_patterns = feature_selection.get("include_patterns")
+            params["feature_selection.include_patterns"] = ",".join(include_patterns) if isinstance(include_patterns, list) else str(include_patterns)
+        if feature_selection.get("exclude"):
+            # Store as comma-separated list for readability
+            exclude = feature_selection.get("exclude")
+            params["feature_selection.exclude"] = ",".join(exclude) if isinstance(exclude, list) else str(exclude)
+    
     # attach run_dir and model_path as params for auditability
     params["run_dir"] = str(run_dir)
     if model_file is not None:

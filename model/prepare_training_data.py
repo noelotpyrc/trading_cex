@@ -198,6 +198,7 @@ def prepare_splits(
     cutoff_start: Optional[str] = None,
     cutoff_mid: Optional[str] = None,
     include_features: Optional[Sequence[str]] = None,
+    include_patterns: Optional[Sequence[str]] = None,
     exclude_features: Optional[Sequence[str]] = None,
     extra_feature_files: Optional[Sequence[dict]] = None,
     warmup_rows: int = 0,
@@ -229,6 +230,7 @@ def prepare_splits(
         merged_with_extras,
         target_col=target,
         include_features=include_features,
+        include_patterns=include_patterns,
         exclude_features=exclude_features,
         warmup_rows=warmup_rows,
     )
@@ -353,6 +355,7 @@ def prepare_splits_from_feature_store(
     *,
     store_merged_csv: bool = True,
     include_features: Optional[Sequence[str]] = None,
+    include_patterns: Optional[Sequence[str]] = None,
     exclude_features: Optional[Sequence[str]] = None,
     extra_feature_files: Optional[Sequence[dict]] = None,
     warmup_rows: int = 0,
@@ -377,7 +380,7 @@ def prepare_splits_from_feature_store(
         merged_with_extras,
         target_col=target,
         include_features=include_features,
-        include_patterns=include_features,
+        include_patterns=include_patterns,
         exclude_features=exclude_features,
         warmup_rows=warmup_rows,
     )

@@ -37,7 +37,10 @@ Record these under MLflow “params”, sourced from the run’s config/artifact
 - `input_data`: absolute path when training from a single CSV (no feature store)
 - `feature_store.features_csv`, `feature_store.targets_csv`: absolute paths when using a feature store
 - `extra_feature_files.{i}.path`, `extra_feature_files.{i}.include`: extra feature inputs (flattened)
-- `feature_list_id`: feature list identifier; use `NA` if not present
+- `feature_selection.include_files`: comma-separated list of feature list file paths (if present)
+- `feature_selection.include`: comma-separated list of direct feature names/patterns (if present)
+- `feature_selection.include_patterns`: comma-separated list of additional feature patterns (if present)
+- `feature_selection.exclude`: comma-separated list of feature names/patterns to exclude (if present)
 - `hyperparam_tuning`: `1` if tuning configured (e.g., LGBM `hyperparameter_tuning_method` or HMM `state_grid` present), else `0`
 - `run_dir`, `model_path`: absolute paths for auditability
 - `external_model_path`: model file path when not copied into MLflow artifacts
@@ -62,7 +65,7 @@ Record these under MLflow “metrics” (may add more):
 ### LGBM regression
 - Experiment: `binance-btcusdt-perp-1h-7d-logret`
 - Run: `run_20251008_145809_lgbm_y_logret_168h_huber`
-- Params (subset): `{model_type: lgbm, target: y_logret_168h, objective: huber, primary_metric: rmse, dataset_slug: BINANCE_BTCUSDT.P__60, prepared_data_dir: /.../prepared_..., output_dir: /.../models/BINANCE_BTCUSDT.P, 60, feature_store.features_csv: /.../features.csv, feature_store.targets_csv: /.../targets.csv, feature_list_id: binance_btcusdt_p60_default, hyperparam_tuning: 1, run_dir: /.../run_20251008_145809_lgbm_y_logret_168h_huber, model_path: /.../model.txt}`
+- Params (subset): `{model_type: lgbm, target: y_logret_168h, objective: huber, primary_metric: rmse, dataset_slug: BINANCE_BTCUSDT.P__60, prepared_data_dir: /.../prepared_..., output_dir: /.../models/BINANCE_BTCUSDT.P, 60, feature_store.features_csv: /.../features.csv, feature_store.targets_csv: /.../targets.csv, feature_selection.include_files: configs/feature_lists/binance_btcusdt_p60_normalized.json, feature_selection.include_patterns: hmm_regime_p_state_*, hyperparam_tuning: 1, run_dir: /.../run_20251008_145809_lgbm_y_logret_168h_huber, model_path: /.../model.txt}`
 - Metrics (subset): `{rmse_train: 0.0548, rmse_val: 0.0669, rmse_test: 0.0448, corr_val: 0.315}`
 - Artifacts: all files under the run directory
 - Registry: Model `btcusdt-1h-inference-7d-logret` → Aliases `Staging`
@@ -70,7 +73,7 @@ Record these under MLflow “metrics” (may add more):
 ### HMM (unsupervised)
 - Experiment: `hmm-btcusdt-1h`
 - Run: `run_hmm_20251009_105640`
-- Params (subset): `{model_type: hmm, target: "unsupervised target", primary_metric: bic, dataset_slug: BINANCE_BTCUSDT.P__60, output_dir: /.../models/BINANCE_BTCUSDT.P, 60, input_data: /.../features.csv, feature_list_id: NA, hyperparam_tuning: 1, run_dir: /.../run_hmm_20251009_105640, model_path: /.../model.joblib}`
+- Params (subset): `{model_type: hmm, target: "unsupervised target", primary_metric: bic, dataset_slug: BINANCE_BTCUSDT.P__60, output_dir: /.../models/BINANCE_BTCUSDT.P, 60, input_data: /.../features.csv, feature_selection.include: close_logret_current_12H,log_volume_delta_current_12H,close_parkinson_20_12H, hyperparam_tuning: 1, run_dir: /.../run_hmm_20251009_105640, model_path: /.../model.joblib}`
 - Metrics (subset): `{n_states: 15, bic_final: 212234.27, icl_final: 212145.16, train_final_ll: -103687.26, test_ll: -18482.57}`
 - Artifacts: `model.joblib`, `scaler.joblib`, `regimes.csv`, `selection_grid.csv`, `prep_metadata.json`, `diagnostics.json`, `metrics.json`, `pipeline_config.json`
 
