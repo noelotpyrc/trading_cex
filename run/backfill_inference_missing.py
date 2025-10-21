@@ -322,7 +322,7 @@ def parse_args(argv: Optional[List[str]] = None) -> BackfillConfig:
     p.add_argument("--end", default=None, help="End timestamp (inclusive) for window/last_from_predictions")
     p.add_argument("--ts", nargs="*", default=[], help="Explicit timestamps for ts_list mode")
     p.add_argument("--ts-file", type=Path, default=None, help="File with one timestamp per line for ts_list mode")
-    p.add_argument("--buffer-hours", type=int, default=6, help="Extra hours on top of base window")
+    p.add_argument("--buffer-hours", type=int, default=0, help="Extra hours on top of base window (default 0)")
     p.add_argument("--base-hours", type=int, default=30 * 24, help="Base training window in hours (default 720)")
     p.add_argument("--at-most", type=int, default=None, help="Cap the number of bars to process")
     p.add_argument("--write-features", action="store_true", help="Also store features_latest rows for audit")
