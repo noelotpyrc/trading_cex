@@ -148,18 +148,30 @@ def main() -> None:
     # regimes length should equal input length
     reg = pd.read_csv(run_dir / 'regimes.csv')
     assert len(reg) == len(df_small), 'regimes length mismatch'
-    # split map should be saved
-    split_map_path = run_dir / 'split_map.csv'
-    assert split_map_path.exists(), 'Missing split_map.csv'
-    sm = pd.read_csv(split_map_path)
-    assert 'split' in sm.columns and 'timestamp' in sm.columns
-    uniq = set(sm['split'].unique().tolist())
-    assert uniq.issubset({'train','val','test'}), f'Unexpected split labels: {uniq}'
+    # prep metadata should be saved
+    prep_meta_path = run_dir / 'prep_metadata.json'
+    assert prep_meta_path.exists(), 'Missing prep_metadata.json'
+    with open(prep_meta_path, 'r') as f:
+        prep_meta = json.load(f)
+    counts = prep_meta.get('split', {}).get('counts', {})
+    assert counts.get('train', 0) > 0, 'prep_metadata missing train rows'
+    assert set(prep_meta.get('split', {}).get('timestamps', {}).keys()).issuperset({'train', 'val', 'test'})
+    rows_accounted = prep_meta.get('split', {}).get('rows_accounted_for', 0)
+    row_counts = prep_meta.get('row_counts', {})
+    rows_trimmed = row_counts.get('rows_after_trim_to_splits')
+    final_rows = row_counts.get('final_model_rows')
+    rows_by_split = row_counts.get('rows_by_split', {})
+    assert rows_trimmed is not None, 'rows_after_trim_to_splits missing in prep metadata'
+    assert final_rows is not None, 'final_model_rows missing in prep metadata'
+    assert rows_trimmed == final_rows, 'Trimmed rows and final model rows mismatch'
+    assert rows_accounted == final_rows, 'Row accounting mismatch in prep metadata'
+    assert sum(rows_by_split.get(k, 0) for k in ('train', 'val', 'test')) == final_rows, 'rows_by_split sum mismatch'
     # If we used prep_metadata, ensure the config recorded it and at least one label exists
     with open(run_dir / 'config.json','r') as f:
         saved_cfg = json.load(f)
     assert 'prep_metadata' in saved_cfg.get('split', {}), 'prep_metadata not recorded in saved config'
-    assert len(sm) == len(reg), 'split_map and regimes length mismatch'
+    assert 'hmm_prep_metadata' in saved_cfg.get('split', {}), 'hmm_prep_metadata path missing in saved config'
+    assert saved_cfg.get('split', {}).get('rows_after_trim_to_splits', 0) == rows_trimmed, 'Config split rows_after_trim_to_splits mismatch'
     print(f'Artifacts persisted under: {tmp_dir}')
     print(f'Artifacts persisted under: {tmp_dir}')
 
