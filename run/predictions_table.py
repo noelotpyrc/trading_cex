@@ -42,6 +42,32 @@ def ensure_table(con: duckdb.DuckDBPyConnection) -> None:
         raise RuntimeError(
             "predictions table missing 'feature_key' column; please drop/recreate the table to upgrade schema"
         )
+    # Enforce uniqueness for (ts, model_path, feature_key) via a unique index.
+    # If duplicates already exist, index creation will fail; surface a helpful error.
+    try:
+        con.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS idx_pred_unique ON {TABLE_NAME}(ts, model_path, feature_key)"
+        )
+    except Exception:
+        # Check for duplicates and raise a clearer message
+        dup_q = f"""
+            SELECT ts, model_path, feature_key, COUNT(*) AS c
+            FROM {TABLE_NAME}
+            GROUP BY 1,2,3
+            HAVING COUNT(*) > 1
+            ORDER BY c DESC
+            LIMIT 5
+        """
+        try:
+            dups = con.execute(dup_q).fetch_df()
+        except Exception:
+            dups = None
+        if dups is not None and not dups.empty:
+            raise RuntimeError(
+                "Cannot enforce (ts, model_path, feature_key) uniqueness: duplicates exist. "
+                f"Sample duplicates:\n{dups.to_string(index=False)}"
+            )
+        raise
 
 
 @dataclass

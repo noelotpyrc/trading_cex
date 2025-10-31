@@ -35,10 +35,8 @@ import shutil
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import roc_auc_score, log_loss
 
-# Hydra support removed – legacy CLI only
-DictConfig = Any  # type: ignore
-OmegaConf = None  # type: ignore
-hydra = None  # type: ignore
+# Bayesian optimization default
+DEFAULT_TRIALS = 50
 
 
 def setup_logging(log_level: str = "INFO", log_dir_override: Optional[str | Path] = None) -> None:
@@ -465,7 +463,7 @@ def _append_tuning_log_row(csv_path: Path, row: Dict[str, Any]) -> None:
     # Ensure all fieldnames present consistently
     fieldnames = [
         'method', 'trial', 'metric', 'best_iteration', 'best_mean', 'best_stdv',
-        'n_folds', 'fold_val_size', 'gap', 'objective', 'params'
+        'n_folds', 'fold_val_size', 'gap', 'objective', 'params', 'rejected'
     ]
     with open(csv_path, 'a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -655,6 +653,7 @@ def _tune_grid_search(config: Dict[str, Any], data_dir: Path, search_space: Dict
             'gap': cv_cfg['gap'],
             'objective': objective_name,
             'params': trial_params,
+            'rejected': False,
         })
         trial_idx += 1
         if best_cv < best_score:
@@ -760,19 +759,15 @@ def _tune_bayesian(config: Dict[str, Any], data_dir: Path, search_space: Dict[st
                 return float('inf')
             mean_key = mean_keys[0]
         best_iter_idx = int(np.argmin(cv_results[mean_key]))
-        min_best_iteration = int(cv_cfg.get('min_best_iteration', 0))
-        if min_best_iteration > 0 and (best_iter_idx + 1) < min_best_iteration:
-            logging.info(
-                "[bayes] Trial %d rejected: best_iter=%d < min_best_iteration=%d",
-                trial.number,
-                best_iter_idx + 1,
-                min_best_iteration,
-            )
-            return float('inf')
         std_key = mean_key.replace('-mean', '-stdv')
         best_mean = float(cv_results[mean_key][best_iter_idx])
         best_stdv = float(cv_results.get(std_key, [np.nan] * (best_iter_idx + 1))[best_iter_idx])
-        # Log this optuna trial
+
+        # Check if trial should be rejected
+        min_best_iteration = int(cv_cfg.get('min_best_iteration', 0))
+        rejected = min_best_iteration > 0 and (best_iter_idx + 1) < min_best_iteration
+
+        # Log ALL trials (both accepted and rejected)
         _append_tuning_log_row(log_csv, {
             'method': 'bayesian',
             'trial': trial.number,
@@ -785,7 +780,18 @@ def _tune_bayesian(config: Dict[str, Any], data_dir: Path, search_space: Dict[st
             'gap': cv_cfg['gap'],
             'objective': objective_name,
             'params': trial_params,
+            'rejected': rejected,
         })
+
+        if rejected:
+            logging.info(
+                "[bayes] Trial %d rejected: best_iter=%d < min_best_iteration=%d",
+                trial.number,
+                best_iter_idx + 1,
+                min_best_iteration,
+            )
+            return float('inf')
+
         logging.info(
             "[bayes] Trial %d result: best_iter=%d, %s=%.6f (+/- %.6f) params=%s",
             trial.number, best_iter_idx + 1, primary, best_mean, best_stdv, json.dumps(trial_params, sort_keys=True)
@@ -793,7 +799,8 @@ def _tune_bayesian(config: Dict[str, Any], data_dir: Path, search_space: Dict[st
         return best_mean
 
     study = optuna.create_study(direction='minimize')
-    study.optimize(objective, n_trials=min(50, max(10, len(list(product(*values_lists))) // 2)))
+    num_of_trials = DEFAULT_TRIALS
+    study.optimize(objective, n_trials=num_of_trials)
     best_params = base_params.copy()
     best_params.update(study.best_params)
 
@@ -1044,19 +1051,6 @@ def persist_results(config: Dict[str, Any], run_dir: Path, metrics: Dict[str, fl
         shutil.copy2(src_meta, run_dir / 'prep_metadata.json')
     logging.info(f"Run metadata saved to: {run_dir}")
     return run_dir
-
-
-def _normalize_objective(obj_cfg: Any) -> Dict[str, Any]:
-    if isinstance(obj_cfg, dict) and obj_cfg.get('type') == 'quantiles':
-        qs = obj_cfg.get('quantiles', [])
-        if not isinstance(qs, list) or len(qs) != 1:
-            raise ValueError("For quantile objective, provide exactly one quantile in 'quantiles'.")
-        return {'name': 'quantile', 'params': {'alpha': float(qs[0])}}
-    if isinstance(obj_cfg, dict) and 'name' in obj_cfg:
-        return {'name': str(obj_cfg['name']).lower(), 'params': obj_cfg.get('params', {})}
-    if isinstance(obj_cfg, str):
-        return {'name': obj_cfg.lower(), 'params': {}}
-    raise ValueError("target.objective must be either a string 'objective', or {name: ..., params: {...}}")
 
 
 def legacy_main():

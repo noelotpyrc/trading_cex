@@ -22,11 +22,6 @@ import pandas as pd
 from hmmlearn.hmm import GaussianHMM
 from sklearn.preprocessing import StandardScaler
 
-# Hydra support removed – legacy CLI only
-DictConfig = Any  # type: ignore
-OmegaConf = None  # type: ignore
-hydra = None  # type: ignore
-
 
 def setup_logging(log_level: str = "INFO", logfile: Path | None = None) -> None:
     """Initialize logging to stdout and optional logfile."""

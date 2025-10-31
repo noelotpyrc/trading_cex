@@ -56,6 +56,11 @@ def train_lgbm_from_config(config_path: Path) -> Path:
     from model import run_lgbm_pipeline as lgbm
 
     config = lgbm.load_config(config_path)
+    # Record the original config file path so the registrar can log it as a param
+    try:
+        config["_config_path"] = str(Path(config_path).resolve())
+    except Exception:
+        config["_config_path"] = str(config_path)
     data_dir = lgbm.prepare_training_data(config)
     tuned_best_params = lgbm.tune_hyperparameters(config, data_dir)
     config["_tuned_best_params"] = tuned_best_params
@@ -74,6 +79,11 @@ def train_hmm_from_config(config_path: Path, log_level: str = "INFO") -> Path:
     from model import run_hmm_pipeline as hmm
 
     cfg = hmm.load_config(config_path)
+    # Record the original config file path so the registrar can log it as a param
+    try:
+        cfg["_config_path"] = str(Path(config_path).resolve())
+    except Exception:
+        cfg["_config_path"] = str(config_path)
     run_dir = hmm.run_hmm_pipeline(cfg, log_level)
     return run_dir
 
@@ -187,5 +197,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

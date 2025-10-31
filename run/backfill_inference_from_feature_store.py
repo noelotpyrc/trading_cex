@@ -23,7 +23,7 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import duckdb  # type: ignore
 import pandas as pd
@@ -63,6 +63,16 @@ def _list_feature_ts(con_feat, feature_key: str, start: pd.Timestamp, end: pd.Ti
     return [pd.Timestamp(t) for t in df['ts']] if not df.empty else []
 
 
+def _list_ts_all(con_feat, start: pd.Timestamp, end: pd.Timestamp) -> List[pd.Timestamp]:
+    q = """
+        SELECT ts FROM features
+        WHERE ts BETWEEN ? AND ?
+        ORDER BY ts
+    """
+    df = con_feat.execute(q, [start.to_pydatetime(), end.to_pydatetime()]).fetch_df()
+    return [pd.Timestamp(t) for t in df['ts']] if not df.empty else []
+
+
 def _last_prediction_ts(con_pred, *, model_path: str, feature_key: str) -> Optional[pd.Timestamp]:
     try:
         row = con_pred.execute(
@@ -95,11 +105,29 @@ def _fetch_feature_map(con_feat, feature_key: str, ts: pd.Timestamp) -> dict | N
     return _json_map_from_row(row[0])
 
 
+def _fetch_feature_row_by_ts(con_feat, ts: pd.Timestamp) -> Tuple[Optional[str], Optional[dict]]:
+    row = con_feat.execute(
+        """
+        SELECT feature_key, features
+        FROM features
+        WHERE ts = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        [pd.Timestamp(ts).to_pydatetime()],
+    ).fetchone()
+    if not row:
+        return None, None
+    fk = str(row[0]) if row[0] is not None else None
+    fmap = _json_map_from_row(row[1]) if row[1] is not None else None
+    return fk, fmap
+
+
 @dataclass
 class InferenceConfig:
     feat_db: Path
     pred_db: Path
-    feature_key: str
+    feature_key: Optional[str]
     dataset: str
     model_root: Optional[str]
     model_path: Optional[str]
@@ -111,6 +139,7 @@ class InferenceConfig:
     at_most: Optional[int]
     overwrite: bool
     dry_run: bool
+    ts_only: bool
 
 
 def _select_ts(cfg: InferenceConfig, con_feat, con_pred, *, model_path: str) -> List[pd.Timestamp]:
@@ -121,28 +150,39 @@ def _select_ts(cfg: InferenceConfig, con_feat, con_pred, *, model_path: str) -> 
         ts = [t for t in raw if t <= cutoff]
         return sorted(ts)
     if cfg.mode == 'last_from_predictions':
-        last = _last_prediction_ts(con_pred, model_path=model_path, feature_key=cfg.feature_key)
+        if cfg.ts_only:
+            # Continue based on model_path only
+            row = con_pred.execute(
+                "SELECT MAX(ts) FROM predictions WHERE model_path = ?",
+                [model_path],
+            ).fetchone()
+            last = pd.Timestamp(row[0]) if row and row[0] is not None else None
+        else:
+            last = _last_prediction_ts(con_pred, model_path=model_path, feature_key=str(cfg.feature_key))
         start_ts = (last + pd.Timedelta(hours=1)) if last is not None else None
         end_ts = pd.to_datetime(cfg.end).tz_localize(None) if cfg.end else cutoff
         if start_ts is None:
             start_ts = end_ts - pd.Timedelta(hours=48)
-        return _list_feature_ts(con_feat, cfg.feature_key, start_ts, end_ts)
+        return _list_ts_all(con_feat, start_ts, end_ts) if cfg.ts_only else _list_feature_ts(con_feat, str(cfg.feature_key), start_ts, end_ts)
     # window mode
     start_ts = pd.to_datetime(cfg.start).tz_localize(None) if cfg.start else None
     end_ts = pd.to_datetime(cfg.end).tz_localize(None) if cfg.end else cutoff
     if start_ts is None:
         start_ts = end_ts - pd.Timedelta(hours=48)
-    return _list_feature_ts(con_feat, cfg.feature_key, start_ts, end_ts)
+    return _list_ts_all(con_feat, start_ts, end_ts) if cfg.ts_only else _list_feature_ts(con_feat, str(cfg.feature_key), start_ts, end_ts)
 
 
-def _preflight_or_die(con_feat, feature_key: str, model_feature_cols: List[str]) -> None:
+def _preflight_or_die(con_feat, model_feature_cols: List[str], *, feature_key: Optional[str], ts_only: bool) -> None:
     # Check one row's keys; if missing any model features, fail fast
-    row = con_feat.execute(
-        "SELECT features FROM features WHERE feature_key = ? ORDER BY ts DESC LIMIT 1",
-        [feature_key],
-    ).fetchone()
+    if not ts_only and feature_key:
+        row = con_feat.execute(
+            "SELECT features FROM features WHERE feature_key = ? ORDER BY ts DESC LIMIT 1",
+            [feature_key],
+        ).fetchone()
+    else:
+        row = con_feat.execute("SELECT features FROM features ORDER BY ts DESC LIMIT 1").fetchone()
     if not row:
-        raise SystemExit(f"No features found for feature_key={feature_key}")
+        raise SystemExit("No features found in feature store for preflight validation")
     keys = set(_json_map_from_row(row[0]).keys())
     missing = [c for c in model_feature_cols if c not in keys]
     if missing:
@@ -170,7 +210,7 @@ def run_inference(cfg: InferenceConfig) -> int:
         resolved_model_path = Path(run_dir) / 'model.txt'
 
     # Preflight: ensure feature store covers all model features
-    _preflight_or_die(con_feat, cfg.feature_key, model_feature_cols)
+    _preflight_or_die(con_feat, model_feature_cols, feature_key=cfg.feature_key, ts_only=cfg.ts_only)
 
     # Select timestamps (use resolved model path for last_from_predictions)
     targets = _select_ts(cfg, con_feat, con_pred, model_path=str(resolved_model_path))
@@ -202,10 +242,20 @@ def run_inference(cfg: InferenceConfig) -> int:
                     [pd.Timestamp(ts).to_pydatetime(), str(resolved_model_path), cfg.feature_key],
                 )
 
-            fmap = _fetch_feature_map(con_feat, cfg.feature_key, ts)
-            if fmap is None:
-                print(f"SKIP {ts}: no features found for key={cfg.feature_key}")
-                continue
+            if cfg.ts_only:
+                used_fk, fmap = _fetch_feature_row_by_ts(con_feat, ts)
+                if fmap is None:
+                    print(f"SKIP {ts}: no features found in store")
+                    continue
+                if not used_fk:
+                    print(f"SKIP {ts}: cannot resolve feature_key for ts-only mode")
+                    continue
+            else:
+                fmap = _fetch_feature_map(con_feat, str(cfg.feature_key), ts)
+                used_fk = cfg.feature_key
+                if fmap is None:
+                    print(f"SKIP {ts}: no features found for key={cfg.feature_key}")
+                    continue
             # Align order and check for missing
             missing = [c for c in model_feature_cols if c not in fmap]
             if missing:
@@ -217,7 +267,7 @@ def run_inference(cfg: InferenceConfig) -> int:
             row = PredictionRow.from_payload({
                 'timestamp': ts,
                 'model_path': str(resolved_model_path),
-                'feature_key': cfg.feature_key,
+                'feature_key': str(used_fk),
                 'y_pred': pred,
             })
             insert_predictions(con_pred, [row])
@@ -237,7 +287,7 @@ def parse_args(argv: Optional[List[str]] = None) -> InferenceConfig:
     p = argparse.ArgumentParser(description="Backfill LightGBM predictions from a DuckDB feature store")
     p.add_argument("--feat-duckdb", type=Path, required=True, help="DuckDB path containing the features table")
     p.add_argument("--pred-duckdb", type=Path, required=True, help="DuckDB path for predictions table")
-    p.add_argument("--feature-key", required=True, help="Feature key to read from the features table")
+    p.add_argument("--feature-key", required=False, help="Feature key to read from the features table (omit with --ts-only)")
     p.add_argument("--dataset", required=True, help="Dataset label stored in predictions")
     p.add_argument("--model-root", default=None, help="Model root containing run_* dirs")
     p.add_argument("--model-path", default=None, help="Explicit run dir or model.txt path")
@@ -248,6 +298,7 @@ def parse_args(argv: Optional[List[str]] = None) -> InferenceConfig:
     p.add_argument("--ts-file", type=Path, default=None, help="File with one timestamp per line for ts_list mode")
     p.add_argument("--at-most", type=int, default=None, help="Cap number of bars to process")
     p.add_argument("--overwrite", action="store_true", help="Overwrite predictions if they already exist")
+    p.add_argument("--ts-only", action="store_true", help="Ignore feature_key; fetch features by ts only (latest created_at)")
     p.add_argument("--dry-run", action="store_true", help="Plan only; do not run predictions")
     args = p.parse_args(argv)
 
@@ -258,7 +309,7 @@ def parse_args(argv: Optional[List[str]] = None) -> InferenceConfig:
     return InferenceConfig(
         feat_db=args.feat_duckdb,
         pred_db=args.pred_duckdb,
-        feature_key=str(args.feature_key),
+        feature_key=(str(args.feature_key) if args.feature_key else None),
         dataset=str(args.dataset),
         model_root=args.model_root,
         model_path=args.model_path,
@@ -270,6 +321,7 @@ def parse_args(argv: Optional[List[str]] = None) -> InferenceConfig:
         at_most=(int(args.at_most) if args.at_most is not None else None),
         overwrite=bool(args.overwrite),
         dry_run=bool(args.dry_run),
+        ts_only=bool(args.ts_only),
     )
 
 

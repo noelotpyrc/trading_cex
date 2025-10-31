@@ -69,6 +69,13 @@ def main() -> None:
     # Derive tags and params
     tags: Dict[str, str] = {}
     params: Dict[str, Any] = {}
+    # Record experiment name explicitly as a parameter for search/filter in UI
+    # (helps when browsing runs across multiple experiments)
+    params["experiment_name"] = str(args.experiment)
+    # If the training wrapper embedded the original config path, record it
+    cfg_path = cfg.get("_config_path")
+    if cfg_path:
+        params["config_path"] = str(cfg_path)
     # dataset slug from output_dir leaf if available; sanitize spaces/commas -> _
     out_dir = cfg.get("output_dir") or run_dir.parent
     dataset_leaf = Path(out_dir).name if out_dir else run_dir.parent.name
@@ -279,5 +286,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
