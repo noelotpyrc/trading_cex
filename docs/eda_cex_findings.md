@@ -49,12 +49,126 @@
    - OI RSI, OI Volatility
    - L/S Ratios
 
+4. **2nd Derivative Features Show Better Correlation**
+   - Acceleration (rate of change of ROC) captures momentum inflection points
+   - OI and Price acceleration both show meaningful correlations with forward returns
+   - 168h smoothing window works well for reducing noise
+
+5. **OI-Price Interaction Features Show Better Correlation**
+   - Divergence and product-based interactions outperform standalone features
+   - Notable features with stronger signal:
+     - `oi_acceleration_168h`, `price_accel_168h`
+     - `oi_price_accel_div_168h` (OI accel - Price accel divergence)
+     - `oi_price_momentum_168h` (OI slope × Price slope)
+     - `oi_price_divergence_168h` (OI distance - Price distance)
+     - `oi_price_accel_product_168h` (OI accel × Price accel)
+
+6. **Volume Interactions Did Not Add Value**
+   - Volume × OI and Volume × Price interactions showed no correlation
+   - Multiple normalization approaches tried (z-score, percentile) - none worked
+   - May be data quality issue or crypto-specific behavior
+
+7. **L/S Ratio Aggregation**
+   - Raw L/S ratios are 5-min granularity but target is hourly
+   - Tested mean, median, and last for 1h aggregation
+   - **Last** works best for hourly aggregation (end-of-hour snapshot)
+
+---
+
+## Notable Feature Calculations (Exact)
+
+**Base Calculations:**
+```python
+oi_roc_1h = sum_open_interest.pct_change(1)
+price_roc_1h = close.pct_change(1)
+```
+
+**1. OI Acceleration (signed to handle direction):**
+```python
+oi_acceleration = np.sign(oi_roc_1h) * oi_roc_1h.diff(1)
+oi_acceleration_168h = oi_acceleration.ewm(span=168).mean()
+```
+
+**2. Price Acceleration:**
+```python
+price_acceleration = np.sign(price_roc_1h) * price_roc_1h.diff(1)
+price_accel_168h = price_acceleration.ewm(span=168).mean()
+```
+
+**3. OI-Price Accel Divergence:**
+```python
+oi_price_accel_div_168h = oi_acceleration_168h - price_accel_168h
+```
+
+**4. OI-Price Momentum (slope product):**
+```python
+oi_ema_slope_168h = oi.ewm(span=168).mean().pct_change(1)
+price_ema_slope_168h = close.ewm(span=168).mean().pct_change(1)
+oi_price_momentum_168h = oi_ema_slope_168h * price_ema_slope_168h
+```
+
+**5. OI-Price Divergence (distance difference):**
+```python
+oi_ema_distance_168h = (oi - oi.ewm(168).mean()) / oi.ewm(168).mean()
+price_ema_distance_168h = (close - close.ewm(168).mean()) / close.ewm(168).mean()
+oi_price_divergence_168h = oi_ema_distance_168h - price_ema_distance_168h
+```
+
+**6. OI-Price Accel Product:**
+```python
+oi_price_accel_product_168h = oi_acceleration_168h * price_accel_168h
+```
+
+---
+
+## Unified 1-Hour Dataset
+
+**Output:** `btcusdt_perp_1h_unified_with_features.csv`
+
+| Stat | Value |
+|------|-------|
+| **Rows** | 34,334 |
+| **Date range** | 2021-12-01 to 2025-10-31 |
+| **All features** | 100% non-null |
+
+### Source Files
+- **OHLCV:** `binance_btcusdt_perp_ohlcv.duckdb` → `ohlcv_btcusdt_1h`
+- **OI, L/S, Target:** `btcusdt_perp_5m_metrics_with_hour_bucket.csv` (aggregated to 1h using **last**)
+- **Premium:** `btcusdt_perp_1h_premium_funding_aligned.csv`
+
+**Source File Generation** (via `align_cex_derivatives_data.py`):
+
+| Output File | Input | Processing |
+|-------------|-------|------------|
+| `btcusdt_perp_5m_metrics_with_hour_bucket.csv` | `BTCUSDT-metrics-*.csv` (5m) | Added `hour_bucket` column (floor to hour) |
+| `btcusdt_perp_1h_premium_funding_aligned.csv` | Premium index (1h) + Funding rate (8h) | Merged, funding rate forward-filled to 1h |
+
+### Data Cleaning
+| Issue | Handling |
+|-------|----------|
+| Zero OI (42 rows) | Replaced with NaN, then forward-filled |
+| Missing premium (990 rows at end) | Forward-filled |
+| Pre-2021-12 data (no metrics) | Removed (no OI data) |
+| Post-2025-10-31 data (stale premium) | Removed (incomplete data) |
+| Inf values in derived features | Replaced with NaN |
+| Extreme EMA distance/slope (>±50%) | Replaced with NaN |
+
+### Columns
+**Base:** `timestamp`, `open`, `high`, `low`, `close`, `volume`, `sum_open_interest`, `count_long_short_ratio`, `y_logret_24h`, `premium_idx_close`
+
+**Derived Features (13):**
+- `oi_roc_ema_168h`, `oi_acceleration_24h/168h`, `oi_ema_distance_168h`, `oi_ema_slope_168h`
+- `price_accel_24h/168h`
+- `oi_price_accel_div_24h/168h`, `oi_price_momentum_168h`, `oi_price_divergence_168h`, `oi_price_accel_product_168h`
+- `premium_zscore_168h`
+
 ---
 
 ## Next Steps
-1. More OI feature engineering
+1. Focus on acceleration and divergence features for modeling
 2. Explore interaction features (OI × L/S ratio)
 3. Consider regime-dependent models (weekend vs weekday)
 4. Test shorter forward return horizons (1h, 4h, 12h)
+5. Combine with Premium Index features
 
-*Last updated: 2025-12-10*
+*Last updated: 2025-12-11*
