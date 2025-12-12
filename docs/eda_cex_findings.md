@@ -127,8 +127,8 @@ oi_price_accel_product_168h = oi_acceleration_168h * price_accel_168h
 
 | Stat | Value |
 |------|-------|
-| **Rows** | 34,334 |
-| **Date range** | 2021-12-01 to 2025-10-31 |
+| **Rows** | 34,332 |
+| **Date range** | 2021-12-01 02:00 to 2025-10-31 23:00 |
 | **All features** | 100% non-null |
 
 ### Source Files
@@ -147,11 +147,11 @@ oi_price_accel_product_168h = oi_acceleration_168h * price_accel_168h
 | Issue | Handling |
 |-------|----------|
 | Zero OI (42 rows) | Replaced with NaN, then forward-filled |
+| Missing L/S ratio (478 rows) | Forward-filled |
 | Missing premium (990 rows at end) | Forward-filled |
-| Pre-2021-12 data (no metrics) | Removed (no OI data) |
-| Post-2025-10-31 data (stale premium) | Removed (incomplete data) |
-| Inf values in derived features | Replaced with NaN |
-| Extreme EMA distance/slope (>±50%) | Replaced with NaN |
+| Pre-2021-12 data (no metrics) | Removed (17,095 rows) |
+| Post-2025-10-31 data (stale premium) | Removed (697 rows) |
+| Warmup rows (2 rows) | Removed (OI pct_change + diff) |
 
 ### Columns
 **Base:** `timestamp`, `open`, `high`, `low`, `close`, `volume`, `sum_open_interest`, `count_long_short_ratio`, `y_logret_24h`, `premium_idx_close`
