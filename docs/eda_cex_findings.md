@@ -164,6 +164,50 @@ oi_price_accel_product_168h = oi_acceleration_168h * price_accel_168h
 
 ---
 
+## Acceleration Feature Refinement (2025-12-12)
+
+### Key Discovery: Old "Acceleration" Was Actually Volatility
+
+Through mathematical analysis, we discovered that the original `oi_acceleration` feature (calculated as `sign(ROC) × diff(ROC)`) was not measuring true acceleration, but rather **volatility** - specifically, it's mathematically equivalent to the Parkinson volatility estimator
+
+The `sign()` function makes the formula measure the **magnitude** of change in momentum regardless of direction, which is the definition of volatility (dispersion), not acceleration (rate of change of velocity).
+
+### Updated Features
+
+| Feature | Formula | Meaning |
+|---------|---------|---------|
+| `oi_volatility` | `sign(ROC) × diff(ROC)` | Magnitude of momentum change (like Parkinson) |
+| `oi_accel_scaled` | `diff(ROC) / volatility` | True 2nd derivative, normalized by volatility regime |
+| `price_volatility` | Same as OI | Price momentum volatility |
+| `price_accel_scaled` | Same as OI | Price acceleration, volatility-normalized |
+
+### Correlation Improvement
+
+The scaled acceleration features show **stronger correlations** with forward returns compared to raw acceleration:
+- Interactions between OI and price scaled accelerations are more interpretable
+- Lead/lag relationships (OI leading price or vice versa) are clearer with normalized features
+
+### Updated Derived Features for further analysis
+
+**Volatility (sign*diff formula):**
+- `oi_volatility_24h`, `oi_volatility_168h`
+
+**Scaled Acceleration (accel/volatility):**
+- `oi_accel_scaled_24h`, `oi_accel_scaled_168h`
+- `price_accel_scaled_24h`, `price_accel_scaled_168h`
+
+**Scaled Accel Interactions:**
+- `oi_price_accel_div_24h`, `oi_price_accel_div_168h` (divergence)
+- `oi_price_accel_product_168h` (product)
+- `oi_accel_vs_price_lag1h`, `price_accel_vs_oi_lag1h` (lead/lag)
+
+**Existing Features from previous analysis:**
+- `oi_roc_ema_168h`, `oi_ema_distance_168h`, `oi_ema_slope_168h`
+- `oi_price_momentum_168h`, `oi_price_divergence_168h`
+- `premium_zscore_168h`
+
+---
+
 ## Next Steps
 1. Focus on acceleration and divergence features for modeling
 2. Explore interaction features (OI × L/S ratio)
