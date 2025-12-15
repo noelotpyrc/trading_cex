@@ -208,11 +208,128 @@ The scaled acceleration features show **stronger correlations** with forward ret
 
 ---
 
-## Next Steps
-1. Focus on acceleration and divergence features for modeling
-2. Explore interaction features (OI × L/S ratio)
-3. Consider regime-dependent models (weekend vs weekday)
-4. Test shorter forward return horizons (1h, 4h, 12h)
-5. Combine with Premium Index features
+## Feature Consolidation for Modeling (2025-12-14)
 
-*Last updated: 2025-12-11*
+### Removed Features
+
+The following features were **removed** from the final modeling set due to low signal or redundancy:
+
+| Feature | Reason |
+|---------|--------|
+| `oi_roc_ema_168h` | High correlation with `oi_ema_distance_168h` |
+| `oi_ema_slope_168h` | High correlation with `oi_ema_distance_168h` |
+| `oi_zscore_168h` | Excluded from final modeling (calculated but not selected) |
+
+### Added Features
+
+| Feature | Formula | Interpretation |
+|---------|---------|----------------|
+| `oi_zscore_168h` | `(OI - rolling_mean_168h) / rolling_std_168h` | Relative OI positioning vs recent history |
+| `oi_price_ratio_spread` | `(OI_EMA_24h / OI_EMA_168h) - (Price_EMA_24h / Price_EMA_168h)` | Short-term trend divergence between OI and price |
+
+### Final OI/Premium Feature Set
+
+The consolidated feature set used in `merge_features_for_modeling.py`:
+
+**Base Features:**
+- `count_long_short_ratio` — Retail L/S ratio (aggregated with `last`)
+- `premium_idx_close` — Raw premium index close
+- `premium_zscore_168h` — Premium z-score (168h rolling)
+
+**OI Volatility & Distance:**
+- `oi_volatility_24h`, `oi_volatility_168h` — OI momentum volatility (sign × diff)
+- `oi_ema_distance_168h` — Distance from 168h EMA (normalized)
+
+**Scaled Acceleration (accel / volatility):**
+- `oi_accel_scaled_24h`, `oi_accel_scaled_168h`
+- `price_accel_scaled_24h`, `price_accel_scaled_168h`
+
+**Scaled Accel Interactions:**
+- `oi_price_accel_div_24h`, `oi_price_accel_div_168h` — OI accel - Price accel
+- `oi_price_accel_product_168h` — OI accel × Price accel
+- `oi_accel_vs_price_lag1h`, `price_accel_vs_oi_lag1h` — Lead/lag relationships
+
+**OI-Price EMA Interactions:**
+- `oi_price_momentum_168h` — OI slope × Price slope
+- `oi_price_divergence_168h` — OI distance - Price distance
+- `oi_price_ratio_spread` — Short/long EMA ratio divergence
+
+### Data Pipeline
+
+```
+btcusdt_perp_1h_unified.csv
+    ↓ add_features_to_unified.py
+btcusdt_perp_1h_unified_with_features.csv
+    ↓ merge_features_for_modeling.py (combines with technical features)
+merged_features_for_modeling.csv
+```
+
+---
+
+## Premium & Spot Volume EDA (2025-12-14)
+
+Explored premium index and spot volume features for signal discovery.
+
+### Theory
+
+1. **Premium = Emotion + Liquidity**
+   - Premium index captures directional sentiment + liquidity stress
+   - Unstable premium (high volatility) indicates market makers pulling back
+
+2. **Spot = Long-term Intent, Perp = Short-term Speculation**
+   - Spot volume represents mid/long-term market participants
+   - OI and perp volume represent short-term gamblers
+   - Divergence between them may signal smart money accumulation
+
+### Promising Features
+
+| Feature | Formula | Interpretation |
+|---------|---------|----------------|
+| `three_way_divergence` | `spot_vol_zscore - oi_zscore - premium_zscore` | All 3 conflicting = unstable market |
+| `imbalance_price_corr_168h` | `rolling_corr(imbalance_zscore, price_roc, 168h)` | Buy/sell imbalance predictive of price? |
+| `premium_volatility_24h` | `rolling_std(premium, 24h)` | Short-term liquidity stress |
+| `premium_per_oi` | `premium / (OI / OI_ema_168h)` | Overleveraged sentiment |
+| `spot_vol_price_corr_168h` | `rolling_corr(spot_vol_roc, price_roc, 168h)` | Spot volume's predictive power |
+| `spot_vs_oi_price_corr_48h` | `spot_vol_price_corr_48h - oi_price_corr_48h` | Who's driving price? |
+
+### Key Findings
+
+**1. Three-Way Divergence (0.065):** When spot volume, OI, and premium all diverge, the market is unstable.
+
+**2. Imbalance-Price Correlation (0.054):** Rolling correlation between taker buy/sell imbalance and price changes — captures how well order flow predicts price direction.
+
+**3. Spot vs OI Price Correlation (48h):** Measures whether spot volume or OI is more predictive of price. Positive = spot driving (institutional), negative = OI driving (speculative).
+
+### Feature Calculations
+
+```python
+# Three-way divergence
+three_way_divergence = spot_vol_zscore_168h - oi_zscore_168h - premium_zscore_168h
+
+# Imbalance-price correlation
+imbalance = taker_buy - (spot_vol - taker_buy)  # buy - sell
+imbalance_zscore = zscore(imbalance, 168h)
+imbalance_price_corr_168h = rolling_corr(imbalance_zscore, close.pct_change(1), 168)
+
+# Spot vs OI price correlation (48h)
+spot_vol_price_corr_48h = rolling_corr(spot_vol.pct_change(1), close.pct_change(1), 48)
+oi_price_corr_48h = rolling_corr(oi.pct_change(1), close.pct_change(1), 48)
+spot_vs_oi_price_corr_48h = spot_vol_price_corr_48h - oi_price_corr_48h
+```
+
+### EDA App
+
+Analysis performed in `apps/eda_premium_spot.py`:
+```bash
+streamlit run apps/eda_premium_spot.py --server.port 8503
+```
+
+---
+
+## Status & Next Steps
+
+### Remaining
+- [ ] Add promising premium/spot features to modeling pipeline
+- [ ] Test feature stability across different time periods
+
+*Last updated: 2025-12-14*
