@@ -326,10 +326,164 @@ streamlit run apps/eda_premium_spot.py --server.port 8503
 
 ---
 
+## Candidate Features for Modeling
+
+**Total: 14 stationary features** selected from EDA for forward return prediction.
+
+---
+
+### `three_way_divergence`
+**Description:** Measures the divergence between spot volume, open interest, and premium. 
+
+```python
+spot_vol_zscore = (spot_vol - spot_vol.rolling(168).mean()) / spot_vol.rolling(168).std()
+oi_zscore = (oi - oi.rolling(168).mean()) / oi.rolling(168).std()
+premium_zscore = (premium - premium.rolling(168).mean()) / premium.rolling(168).std()
+three_way_divergence = spot_vol_zscore - oi_zscore - premium_zscore
+```
+
+---
+
+### `premium_volatility_48h`
+**Description:** Short-term volatility of the premium index. High premium volatility indicates liquidity stress and unstable funding conditions.
+
+```python
+premium_volatility_48h = premium.rolling(48, min_periods=24).std()
+```
+
+---
+
+### `spot_vol_price_corr_168h`
+**Description:** Rolling 7-day correlation between spot volume changes and price changes. Measures how well spot volume activity predicts price direction.
+
+```python
+spot_vol_roc = spot_volume.pct_change(1)
+price_roc = close.pct_change(1)
+spot_vol_price_corr_168h = spot_vol_roc.rolling(168, min_periods=24).corr(price_roc)
+```
+
+---
+
+### `spot_vs_oi_price_corr_48h`
+**Description:** Difference between spot volume-price correlation and OI-price correlation. Positive values indicate spot market is driving price (institutional), negative indicates perp market is driving price (speculative).
+
+```python
+spot_vol_price_corr_48h = spot_vol_roc.rolling(48).corr(price_roc)
+oi_price_corr_48h = oi_roc.rolling(48).corr(price_roc)
+spot_vs_oi_price_corr_48h = spot_vol_price_corr_48h - oi_price_corr_48h
+```
+
+---
+
+### `imbalance_price_corr_168h`
+**Description:** Rolling correlation between taker buy/sell imbalance and price changes. Measures how well order flow imbalance predicts price direction.
+
+```python
+imbalance = spot_taker_buy_volume - (spot_volume - spot_taker_buy_volume)  # buy - sell
+imbalance_mean = imbalance.rolling(168).mean()
+imbalance_std = imbalance.rolling(168).std()
+imbalance_zscore = (imbalance - imbalance_mean) / imbalance_std
+imbalance_price_corr_168h = imbalance_zscore.rolling(168).corr(price_roc)
+```
+
+---
+
+### `spot_dom_vol_24h`
+**Description:** 24-hour volatility of spot dominance ratio. High volatility indicates unstable market leadership between spot and perp markets.
+
+```python
+spot_dominance = spot_volume / (spot_volume + perp_volume)
+spot_dom_vol_24h = spot_dominance.rolling(24, min_periods=12).std()
+```
+
+---
+
+### `spot_dom_roc_price_roc_corr_24h`
+**Description:** 24-hour rolling correlation between spot dominance rate-of-change and price rate-of-change. Measures whether changes in market leadership correlate with price moves.
+
+```python
+spot_dom_roc = spot_dominance.pct_change(1)
+price_roc = close.pct_change(1)
+spot_dom_roc_price_roc_corr_24h = spot_dom_roc.rolling(24, min_periods=12).corr(price_roc)
+```
+
+---
+
+### `spot_dom_roc_oi_roc_corr_48h` / `spot_dom_roc_oi_roc_corr_168h`
+**Description:** Rolling correlation between spot dominance rate-of-change and OI rate-of-change. Measures whether spot market leadership changes correlate with perp positioning changes.
+
+```python
+spot_dom_roc = spot_dominance.pct_change(1)
+oi_roc = oi.pct_change(1)
+spot_dom_roc_oi_roc_corr_48h = spot_dom_roc.rolling(48, min_periods=24).corr(oi_roc)
+spot_dom_roc_oi_roc_corr_168h = spot_dom_roc.rolling(168, min_periods=24).corr(oi_roc)
+```
+
+---
+
+### `trade_size_premium_divergence`
+**Description:** Difference between average trade size z-score and premium z-score. Positive values indicate large trades (whales) during low/negative premium (bearish sentiment) — contrarian signal.
+
+```python
+avg_trade_size_usd = spot_quote_volume / spot_num_trades
+ats_mean = avg_trade_size_usd.rolling(168).mean()
+ats_std = avg_trade_size_usd.rolling(168).std()
+avg_trade_size_zscore = (avg_trade_size_usd - ats_mean) / ats_std
+premium_zscore = (premium - premium.rolling(168).mean()) / premium.rolling(168).std()
+trade_size_premium_divergence = avg_trade_size_zscore - premium_zscore
+```
+
+---
+
+### `trade_count_lead_price_corr_168h`
+**Description:** Rolling correlation between *lagged* trade count changes and current price changes. Tests whether yesterday's trading activity predicts today's price direction.
+
+```python
+trade_count_shifted = spot_num_trades.shift(24)  # 24h lag
+tc_shifted_roc = trade_count_shifted.pct_change(1)
+trade_count_lead_price_corr_168h = tc_shifted_roc.rolling(168, min_periods=24).corr(price_roc)
+```
+
+---
+
+### `trade_size_price_corr_168h`
+**Description:** Rolling correlation between average trade size changes and price changes. Measures whether larger trades correlate with price direction.
+
+```python
+avg_trade_size_usd = spot_quote_volume / spot_num_trades
+avg_size_roc = avg_trade_size_usd.pct_change(1)
+price_roc = close.pct_change(1)
+trade_size_price_corr_168h = avg_size_roc.rolling(168, min_periods=24).corr(price_roc)
+```
+
+---
+
+### `trade_count_oi_corr_168h`
+**Description:** Rolling correlation between trade count changes and OI changes. Negative correlation (spot activity up, OI down) may indicate spot accumulation while perps unwind — bullish signal.
+
+```python
+trade_count_roc = spot_num_trades.pct_change(1)
+oi_roc = oi.pct_change(1)
+trade_count_oi_corr_168h = trade_count_roc.rolling(168, min_periods=24).corr(oi_roc)
+```
+
+---
+
+### `trade_count_spot_dom_corr_168h`
+**Description:** Rolling correlation between trade count changes and spot dominance changes. Negative correlation indicates high trading activity when spot market share is declining — potential divergence signal.
+
+```python
+trade_count_roc = spot_num_trades.pct_change(1)
+spot_dom_roc = spot_dominance.pct_change(1)
+trade_count_spot_dom_corr_168h = trade_count_roc.rolling(168, min_periods=24).corr(spot_dom_roc)
+```
+
+---
+
 ## Status & Next Steps
 
 ### Remaining
-- [ ] Add promising premium/spot features to modeling pipeline
+- [ ] Add candidate features to modeling pipeline
 - [ ] Test feature stability across different time periods
 
-*Last updated: 2025-12-14*
+*Last updated: 2025-12-15*
