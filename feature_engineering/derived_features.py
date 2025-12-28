@@ -28,10 +28,11 @@ from .primitives import (
 # =============================================================================
 
 # Displacement (distance from equilibrium)
-def price_vwap_distance_zscore(close: pd.Series, volume: pd.Series, 
+def price_vwap_distance_zscore(open_: pd.Series, high: pd.Series, low: pd.Series,
+                                close: pd.Series, volume: pd.Series, 
                                 vwap_window: int, zscore_window: int) -> pd.Series:
     """Displacement: price distance from VWAP, z-scored"""
-    vwap = rolling_vwap(close, volume, vwap_window)
+    vwap = rolling_vwap(open_, high, low, close, volume, vwap_window)
     vwap_dist = (close - vwap) / vwap
     return zscore(vwap_dist, zscore_window)
 # try vwap window of 24, 168 and 720, then zscore window always 168
@@ -68,19 +69,24 @@ def return_autocorr(close: pd.Series, window: int) -> pd.Series:
     return r.rolling(window).corr(r.shift(1))
 # try window of 48 and 168
 
+
 def run_fraction(close: pd.Series, window: int) -> pd.Series:
+    """
+    Fraction of non-zero returns in the window that have the same sign as the current.
+    
+    Zero returns are completely ignored (become NaN).
+    
+    NOTE: Not used in feature generation due to high NaN rate when close is unchanged.
+    """
     r = np.log(close).diff()
-    s = np.sign(r)
+    s = np.sign(r).replace(0, np.nan)  # zeros → NaN, ignored
 
     def same_sign_frac(x: pd.Series) -> float:
-        cur = x.iloc[-1]
-        if pd.isna(cur) or cur == 0:
-            return np.nan  # undefined if latest return is exactly 0
-        # optionally ignore zeros in the window
-        x_nz = x[x != 0]
-        if len(x_nz) == 0:
+        x_valid = x.dropna()
+        if len(x_valid) < 2:
             return np.nan
-        return (x_nz == cur).mean()
+        cur = x_valid.iloc[-1]
+        return (x_valid.iloc[:-1] == cur).mean()
 
     return s.rolling(window).apply(same_sign_frac, raw=False)
 # try window of 24 and 168
@@ -119,17 +125,17 @@ def oi_price_momentum(oi: pd.Series, close: pd.Series, span: int) -> pd.Series:
 
 # --- Flow-based momentum ---
 
-def cvd_slope(taker_buy: pd.Series, spot_volume: pd.Series, window: int) -> pd.Series:
-    """Slope of cumulative volume delta (directional pressure)"""
-    imbalance = taker_buy - (spot_volume - taker_buy)
+def taker_imb_cvd_slope(taker_buy: pd.Series, spot_volume: pd.Series, window: int) -> pd.Series:
+    """Slope of cumulative taker imbalance (directional pressure)"""
+    imbalance = taker_buy - (spot_volume - taker_buy)  # = 2*taker_buy - spot_vol
     cvd = imbalance.cumsum()
     return (cvd - cvd.shift(window)) / window  # fast endpoint slope
 # try window as 24, 168
 
-def net_taker_volume_zscore(taker_buy: pd.Series, spot_volume: pd.Series, 
-                             window: int) -> pd.Series:
-    """Z-score of net taker volume (aggressive flow)"""
-    imbalance = taker_buy - (spot_volume - taker_buy)
+def taker_imb_zscore(taker_buy: pd.Series, spot_volume: pd.Series, 
+                     window: int) -> pd.Series:
+    """Z-score of taker imbalance (aggressive flow)"""
+    imbalance = taker_buy - (spot_volume - taker_buy)  # = 2*taker_buy - spot_vol
     return zscore(imbalance, window)
 # try window as 168
 
@@ -158,7 +164,8 @@ def trade_count_lead_price_corr(num_trades: pd.Series, close: pd.Series,
 
 # --- Price-based mean reversion ---
 
-def pullback_slope(close: pd.Series, ema_span: int, window: int) -> pd.Series:
+def pullback_slope_ema(close: pd.Series, ema_span: int, window: int) -> pd.Series:
+    """Pullback slope using EMA as mean proxy."""
     y = np.log(close)
     m = ema(y, ema_span)
     d = y - m
@@ -172,7 +179,26 @@ def pullback_slope(close: pd.Series, ema_span: int, window: int) -> pd.Series:
 # try ema span as 24, 168 and 720, and window as 48 and 168
 
 
-def mean_cross_rate(close: pd.Series, ema_span: int, window: int) -> pd.Series:
+def pullback_slope_vwap(open_: pd.Series, high: pd.Series, low: pd.Series,
+                         close: pd.Series, volume: pd.Series, 
+                         vwap_window: int, window: int) -> pd.Series:
+    """Pullback slope using VWAP as mean proxy."""
+    y = np.log(close)
+    vwap = rolling_vwap(open_, high, low, close, volume, vwap_window)
+    m = np.log(vwap)
+    d = y - m
+    r = y.diff(1)
+
+    x = (-d.shift(1))  # predictor
+    cov = x.rolling(window).cov(r)
+    var = x.rolling(window).var()
+
+    return cov / var.where(var > 0)
+# try vwap window as 24, 168 and 720, and window as 48 and 168
+
+
+def mean_cross_rate_ema(close: pd.Series, ema_span: int, window: int) -> pd.Series:
+    """Mean crossing rate using EMA as mean proxy."""
     y = np.log(close)
     m = ema(y, ema_span)
     d = y - m
@@ -183,6 +209,22 @@ def mean_cross_rate(close: pd.Series, ema_span: int, window: int) -> pd.Series:
     # exact normalization by (window - 1)
     return cross.rolling(window).sum() / (window - 1)
 # try ema span as 24, 168 and 720, and window as 48 and 168
+
+
+def mean_cross_rate_vwap(open_: pd.Series, high: pd.Series, low: pd.Series,
+                          close: pd.Series, volume: pd.Series,
+                          vwap_window: int, window: int) -> pd.Series:
+    """Mean crossing rate using VWAP as mean proxy."""
+    y = np.log(close)
+    vwap = rolling_vwap(open_, high, low, close, volume, vwap_window)
+    m = np.log(vwap)
+    d = y - m
+
+    s = np.sign(d).replace(0, np.nan).ffill()
+    cross = (s != s.shift(1)).astype(float)
+
+    return cross.rolling(window).sum() / (window - 1)
+# try vwap window as 24, 168 and 720, and window as 48 and 168
 
 
 # --- OI-based reversion signals ---
@@ -227,18 +269,18 @@ def avg_trade_size_zscore(quote_volume: pd.Series, num_trades: pd.Series,
 
 # --- Flow reversion signals ---
 
-def imbalance_price_corr(taker_buy: pd.Series, spot_volume: pd.Series, 
-                          close: pd.Series, window: int) -> pd.Series:
-    """Imbalance-price correlation (exhaustion when weak)"""
-    imbalance = taker_buy - (spot_volume - taker_buy)
+def taker_imb_price_corr(taker_buy: pd.Series, spot_volume: pd.Series, 
+                         close: pd.Series, window: int) -> pd.Series:
+    """Taker imbalance-price correlation (exhaustion when weak)"""
+    imbalance = taker_buy - (spot_volume - taker_buy)  # = 2*taker_buy - spot_vol
     imb_z = zscore(imbalance, window)
     price_roc = pct_change(close)
     return rolling_corr(imb_z, price_roc, window)
 # try window as 168
 
-def trade_size_price_corr(quote_volume: pd.Series, num_trades: pd.Series,
-                           close: pd.Series, window: int) -> pd.Series:
-    """Trade size-price correlation"""
+def avg_trade_size_price_corr(quote_volume: pd.Series, num_trades: pd.Series,
+                               close: pd.Series, window: int) -> pd.Series:
+    """Average trade size-price correlation"""
     avg_size = quote_volume / num_trades.replace(0, np.nan)
     avg_size_roc = pct_change(avg_size)
     price_roc = pct_change(close)
@@ -340,7 +382,7 @@ def spot_dom_vol_ratio(spot_volume: pd.Series, perp_volume: pd.Series,
     vol_fast = rolling_std(spot_dom, fast_window)
     vol_slow = rolling_std(spot_dom, slow_window)
     return vol_fast / vol_slow.replace(0, np.nan)
-
+# try fast window as 24, and slow window as 168
 
 # =============================================================================
 # INTERACTIONS
@@ -348,34 +390,35 @@ def spot_dom_vol_ratio(spot_volume: pd.Series, perp_volume: pd.Series,
 
 # --- Core physics interactions ---
 
-def displacement_speed_product(close: pd.Series, volume: pd.Series,
+def displacement_speed_product(open_: pd.Series, high: pd.Series, low: pd.Series,
+                               close: pd.Series, volume: pd.Series,
                                vwap_window: int, speed_window: int) -> pd.Series:
     """x_t * speed_t: x_t is log(C/VWAP), speed is k-step log return."""
-    vwap = rolling_vwap(close, volume, vwap_window)
+    vwap = rolling_vwap(open_, high, low, close, volume, vwap_window)
 
     x = np.log(close) - np.log(vwap)                 # displacement (log space)
     speed = np.log(close) - np.log(close.shift(speed_window))  # k-step speed
 
     return x * speed
-
+# try vwap window as 168 and 720, and speed window as 24 and 48
 
 
 def range_chop_interaction(high, low, open_, close, window: int) -> pd.Series:
     pv = parkinson_volatility(high, low, window)
     eff = efficiency_avg(open_, high, low, close, window).clip(0, 1)
     return pv * (1.0 - eff)
+# try window as 24 and 168
 
-
-def range_stretch_interaction(high: pd.Series, low: pd.Series,
+def range_stretch_interaction(open_: pd.Series, high: pd.Series, low: pd.Series,
                               close: pd.Series, volume: pd.Series,
                               vwap_window: int, vol_window: int) -> pd.Series:
     """PV * |log(C/VWAP)|: big range and big stretch from equilibrium."""
     pv = parkinson_volatility(high, low, vol_window)
-    vwap = rolling_vwap(close, volume, vwap_window)
+    vwap = rolling_vwap(open_, high, low, close, volume, vwap_window)
 
     stretch = (np.log(close) - np.log(vwap)).abs()
     return pv * stretch
-
+# try vwap window as 168 and 720, and vol window as 24 and 168
 
 
 # --- Utility ---
@@ -390,7 +433,7 @@ def scaled_acceleration(series: pd.Series, span: int) -> pd.Series:
     vol_ema = ema(volatility, span)
     
     return accel_ema / vol_ema.replace(0, np.nan)
-
+# try span as 24 and 168
 
 # --- OI-Price interactions ---
 
@@ -400,7 +443,7 @@ def oi_price_ratio_spread(oi: pd.Series, close: pd.Series,
     oi_ratio = ema(oi, fast_span) / ema(oi, slow_span)
     price_ratio = ema(close, fast_span) / ema(close, slow_span)
     return oi_ratio - price_ratio
-
+# try fast span as 24, and slow span as 168
 
 # --- Spot-Price interactions ---
 
@@ -409,14 +452,14 @@ def spot_vol_price_corr(spot_volume: pd.Series, close: pd.Series, window: int) -
     spot_roc = pct_change(spot_volume)
     price_roc = pct_change(close)
     return rolling_corr(spot_roc, price_roc, window)
-
+# try window as 168
 
 def oi_vol_price_corr(oi: pd.Series, close: pd.Series, window: int) -> pd.Series:
     """OI-price correlation"""
     oi_roc = pct_change(oi)
     price_roc = pct_change(close)
     return rolling_corr(oi_roc, price_roc, window)
-
+# try window as 168
 
 def spot_dom_price_corr(spot_volume: pd.Series, perp_volume: pd.Series,
                          close: pd.Series, window: int) -> pd.Series:
@@ -425,7 +468,7 @@ def spot_dom_price_corr(spot_volume: pd.Series, perp_volume: pd.Series,
     spot_dom_roc = pct_change(spot_dom)
     price_roc = pct_change(close)
     return rolling_corr(spot_dom_roc, price_roc, window)
-
+# try window as 24 and 168
 
 def spot_dom_oi_corr(spot_volume: pd.Series, perp_volume: pd.Series,
                       oi: pd.Series, window: int) -> pd.Series:
@@ -434,6 +477,7 @@ def spot_dom_oi_corr(spot_volume: pd.Series, perp_volume: pd.Series,
     spot_dom_roc = pct_change(spot_dom)
     oi_roc = pct_change(oi)
     return rolling_corr(spot_dom_roc, oi_roc, window)
+# try window as 24 and 168
 
 # --- Trade interactions ---
 
@@ -442,7 +486,7 @@ def trade_count_oi_corr(num_trades: pd.Series, oi: pd.Series, window: int) -> pd
     tc_roc = pct_change(num_trades)
     oi_roc = pct_change(oi)
     return rolling_corr(tc_roc, oi_roc, window)
-
+# try window as 168
 
 def trade_count_spot_dom_corr(num_trades: pd.Series, spot_volume: pd.Series,
                                perp_volume: pd.Series, window: int) -> pd.Series:
@@ -451,4 +495,119 @@ def trade_count_spot_dom_corr(num_trades: pd.Series, spot_volume: pd.Series,
     spot_dom = spot_dominance(spot_volume, perp_volume)
     spot_dom_roc = pct_change(spot_dom)
     return rolling_corr(tc_roc, spot_dom_roc, window)
+# try window as 168
 
+def amihud(close: pd.Series, volume: pd.Series, eps: float = 1e-12) -> pd.Series:
+    close = close.astype(float)
+    volume = volume.astype(float)
+    r = np.log(close).diff().abs()
+    dollar_vol = (close * volume).replace(0, np.nan)
+    return r / (dollar_vol + eps)
+
+
+def normalize_ratio(
+    x: pd.Series,
+    window: int,
+    method: str = "median_ratio",
+    log_transform: bool = True,
+    eps: float = 1e-12,
+    min_periods: int = None
+) -> pd.Series:
+    """
+    Generic normalization helper.
+
+    Methods:
+      - "median_ratio": x / rolling_median(x)          (ratio in raw space)
+      - "mean_ratio":   x / rolling_mean(x)            (ratio in raw space)
+      - "demean":       log(x) - rolling_mean(log(x))  (additive, log-space if log_transform)
+      - "zscore":       (log(x)-mu)/sd                 (additive, log-space if log_transform)
+
+    If log_transform=True:
+      - for ratio methods: return log(x / base)
+      - for demean/zscore: operate on log(x)
+    
+    min_periods defaults to 60% of window (100 for 168-window).
+    """
+    if min_periods is None:
+        min_periods = int(window * 0.6)
+    
+    if method in ("median_ratio", "mean_ratio"):
+        if method == "median_ratio":
+            base = x.rolling(window, min_periods=min_periods).median()
+        else:
+            base = x.rolling(window, min_periods=min_periods).mean()
+
+        rel = x / (base + eps)
+        return np.log(rel + eps) if log_transform else rel
+
+    # additive normalizations
+    z = np.log(x + eps) if log_transform else x
+
+    if method == "demean":
+        mu = z.rolling(window, min_periods=min_periods).mean()
+        return z - mu
+
+    if method == "zscore":
+        mu = z.rolling(window, min_periods=min_periods).mean()
+        sd = z.rolling(window, min_periods=min_periods).std()
+        return (z - mu) / (sd + eps)
+
+    raise ValueError(f"Unknown method: {method}")
+
+
+def relative_amihud(
+    close: pd.Series,
+    volume: pd.Series,
+    window: int,
+    method: str = "median_ratio",
+    log_transform: bool = True,
+    eps: float = 1e-12
+) -> pd.Series:
+    a = amihud(close, volume, eps=eps)
+    return normalize_ratio(a, window, method=method, log_transform=log_transform, eps=eps)
+
+# try window as 168
+
+
+def oi_volume_efficiency(oi: pd.Series, volume: pd.Series, 
+                          ratio_window: int, norm_window: int,
+                          method: str = "median_ratio", 
+                          log_transform: bool = True) -> pd.Series:
+    """
+    OI change efficiency: |N-bar OI change| / (N-bar volume sum), normalized.
+    
+    Uses absolute OI change (like Amihud uses |return|).
+    """
+    oi_change = oi.diff(ratio_window).abs()
+    vol_sum = volume.rolling(ratio_window).sum()
+    ratio = oi_change / vol_sum.replace(0, np.nan)
+    return normalize_ratio(ratio, norm_window, method=method, log_transform=log_transform)
+# try ratio_window as 24, norm_window as 168
+
+
+def oi_volume_efficiency_signed(oi: pd.Series, volume: pd.Series,
+                                 ratio_window: int, norm_window: int,
+                                 method: str = "median_ratio",
+                                 log_transform: bool = True) -> tuple[pd.Series, pd.Series]:
+    """
+    Separate OI change efficiency for positive and negative OI changes.
+    
+    Returns:
+        (oi_vol_eff_positive, oi_vol_eff_negative)
+        
+    Positive: OI building (new positions opening)
+    Negative: OI shrinking (positions closing/liquidating)
+    
+    Uses clip pattern (zeros where sign doesn't match).
+    """
+    oi_change = oi.diff(ratio_window)
+    vol_sum = volume.rolling(ratio_window).sum().replace(0, np.nan)
+    
+    ratio_pos = oi_change.clip(lower=0.0) / vol_sum
+    ratio_neg = (-oi_change).clip(lower=0.0) / vol_sum
+    
+    eff_pos = normalize_ratio(ratio_pos, norm_window, method=method, log_transform=log_transform)
+    eff_neg = normalize_ratio(ratio_neg, norm_window, method=method, log_transform=log_transform)
+    
+    return eff_pos, eff_neg
+# try ratio_window as 48 and 168, norm_window as 168

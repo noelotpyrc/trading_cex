@@ -152,9 +152,11 @@ def adx(high: pd.Series, low: pd.Series, close: pd.Series, window: int) -> pd.Se
 def zscore(series: pd.Series, window: int, min_periods: int = None) -> pd.Series:
     """
     Rolling z-score: (value - rolling_mean) / rolling_std
+    
+    min_periods defaults to 94% of window to tolerate small gaps.
     """
     if min_periods is None:
-        min_periods = max(1, window // 4)
+        min_periods = int(window * 0.94)  # 94% of window required
     mean = series.rolling(window, min_periods=min_periods).mean()
     std = series.rolling(window, min_periods=min_periods).std()
     return (series - mean) / std.replace(0, np.nan)
@@ -164,13 +166,16 @@ def zscore(series: pd.Series, window: int, min_periods: int = None) -> pd.Series
 # PRICE ANCHORS
 # =============================================================================
 
-def rolling_vwap(close: pd.Series, volume: pd.Series, window: int) -> pd.Series:
+def rolling_vwap(open_: pd.Series, high: pd.Series, low: pd.Series, 
+                  close: pd.Series, volume: pd.Series, window: int) -> pd.Series:
     """
-    Rolling Volume Weighted Average Price.
+    Rolling Volume Weighted Average Price using typical price.
     
-    Formula: sum(close * volume, window) / sum(volume, window)
+    Formula: sum(typical_price * volume, window) / sum(volume, window)
+    where typical_price = (open + high + low + close) / 4
     """
-    pv = close * volume
+    typical_price = (open_ + high + low + close) / 4
+    pv = typical_price * volume
     return pv.rolling(window).sum() / volume.rolling(window).sum()
 
 
