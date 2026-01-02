@@ -75,18 +75,19 @@ Checkpoints are used as progressive profit locks, and stop loss is used as hard 
 | **C=5bps, CP=[10,15,20]** | 9,922 | 25.06% | 0.2083% | -0.1096% | -0.0300% | -94.98% | $5,019.27 |
 | **C=5bps, CP=[20,30,40]** | 8,832 | 22.17% | 0.2886% | -0.1192% | -0.0288% | -92.36% | $7,642.10 |
 | **C=15bps, CP=[10,15,20]** | 3,307 | 22.04% | 0.3301% | -0.1211% | -0.0217% | -51.70% | $48,295.11 |
-| **C=15bps, CP=[20,30,40]** | 3,360 | 18.35% | 0.4554% | -0.1255% | -0.0189% | -45.85% | $54,148.89 |
+| **C=15bps, CP=[20,30,40]** | 3,160 | 18.35% | 0.4554% | -0.1255% | -0.0189% | -45.85% | $54,148.89 |
 | **Base (Allday, 15bps, CP[20,30,40], Adj-0.5%)** | 3,157 | 18.75% | 0.4509% | -0.1273% | -0.0189% | -45.74% | $54,260.91 |
 | **Base + Weekend Only** | 440 | 17.95% | 0.3563% | -0.1274% | -0.0406% | -16.47% | $83,527.14 |
-| **Base + No Fee** | 3,157 | 19.73% | 0.3563% | -0.0737% | +0.0111% | **+38.74%** | $138,739.74 |
+| **Base + No Fee** | 3,157 | 19.73% | 0.4575% | -0.0986% | +0.0111% | **+39.90%** | $139,903.10 |
 | **Base + CD 2** | 1,383 | 26.75% | 0.3849% | -0.1702% | -0.0217% | -26.52% | $73,478.19 |
 | **Base + CD 5** | 739 | 25.30% | 0.4003% | -0.1710% | -0.0264% | -18.16% | $81,841.97 |
-| **Base + CD 10** | 432 | 25.46% | 0.4463% | -0.1673% | -0.0110% | **-4.54%** | $95,457.63 |
+| **Base + CD 10** | 432 | 25.46% | 0.4463% | -0.1673% | -0.0110% | **-4.89%** | $95,108.68 |
 
 ### Observations
 
-1. **Profitability**: Fees (0.03%) are the main killer. Only the No Fees setup is profitable (+38.74%).
+1. **Profitability**: Fees (0.03%) are the main killer. Only the No Fees setup is profitable (+39.90%).
 2. **Loss Reduction**: 
-    - **Cooldowns** (CD 10) work best realistically (-4.54%), significantly cutting overtrading.
+    - **Cooldowns** (CD 10) work best realistically (-4.89%), significantly cutting overtrading.
     - **Weekend Only** is also relatively safe (-16.47%).
+    - **Higher C-threshold**: C=15bps performs much better (-51%) than C=5bps (-95%), reducing overtrading significantly (3k trades vs 10k trades).
 3. **Discrepancy Resolved**: Base and No Fee now show identical trade counts (3,157).
