@@ -64,8 +64,8 @@ Checkpoints are used as progressive profit locks, and stop loss is used as hard 
 ## The results so far
 
 - None of the strategies is profitable
-- A/B/C entry filters increase the win rate but also increase the loss rate
-- D/E filters don't help on win rate but reduce the loss rate and overall trading frequency
+- A/B/C entry filters increase the win pnl percentage but also increase the loss percentage
+- D/E filters don't help on win pnl percentage but reduce the loss percentage and overall trading frequency
 
 ### Strategy comparison report
 
