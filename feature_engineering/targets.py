@@ -195,6 +195,106 @@ def compute_barrier_outcomes(
     return {ternary_key: ternary_value, binary_key: binary_value}
 
 
+def compute_r_multiple(
+    forward_high: pd.Series,
+    forward_low: pd.Series,
+    forward_close: pd.Series,
+    entry_price: float,
+    tp_pct: float,
+    sl_pct: float,
+    horizon_bars: int,
+    *,
+    horizon_label: Optional[str] = None,
+    tie_policy: TiePolicy = "conservative",
+) -> Dict[str, float]:
+    """
+    Compute R-multiple outcome for a long position.
+    
+    R (Risk unit) = sl_pct
+    
+    Outcomes:
+    - TP hit first: +tp_pct / sl_pct (e.g., tp=4%, sl=2% → +2R)
+    - SL hit first: -1.0 R
+    - Neither hit (natural close): forward_return / sl_pct
+    
+    Args:
+        forward_high: High prices for bars t+1 to t+H
+        forward_low: Low prices for bars t+1 to t+H
+        forward_close: Close prices for bars t+1 to t+H
+        entry_price: Entry price at bar t
+        tp_pct: Take profit percentage (e.g., 0.04 for 4%)
+        sl_pct: Stop loss percentage (e.g., 0.02 for 2%), also defines R
+        horizon_bars: Number of forward bars (H)
+        horizon_label: Optional label for the horizon (e.g., "24h")
+        tie_policy: How to handle ties ("conservative" = SL first)
+    
+    Returns:
+        Dict with key y_r_mult_tp{tp}_sl{sl}_{horizon} and R-multiple value
+    """
+    label = _format_horizon_label(horizon_bars, horizon_label)
+    tp_str = f"{int(tp_pct*100)}"
+    sl_str = f"{int(sl_pct*100)}"
+    key = f"y_r_mult_tp{tp_str}sl{sl_str}_{label}"
+    
+    # Validate inputs
+    if (
+        forward_high is None
+        or forward_low is None
+        or forward_close is None
+        or len(forward_high) < horizon_bars
+        or len(forward_low) < horizon_bars
+        or len(forward_close) < horizon_bars
+        or not np.isfinite(entry_price)
+        or entry_price <= 0.0
+        or tp_pct <= 0.0
+        or sl_pct <= 0.0
+    ):
+        return {key: np.nan}
+    
+    upper_threshold = entry_price * (1.0 + tp_pct)
+    lower_threshold = entry_price * (1.0 - sl_pct)
+    
+    # Find first barrier hit
+    first_label = None  # +1 for TP, -1 for SL, None if neither
+    
+    for i in range(min(horizon_bars, len(forward_high))):
+        bar_high = float(forward_high.iloc[i])
+        bar_low = float(forward_low.iloc[i])
+        
+        hit_upper = np.isfinite(bar_high) and bar_high >= upper_threshold
+        hit_lower = np.isfinite(bar_low) and bar_low <= lower_threshold
+        
+        if not hit_upper and not hit_lower:
+            continue
+        
+        if hit_upper and not hit_lower:
+            first_label = 1
+        elif hit_lower and not hit_upper:
+            first_label = -1
+        else:
+            # Tie: both barriers hit in same bar
+            # Conservative: assume SL hit first
+            first_label = -1
+        break
+    
+    # Calculate R-multiple
+    if first_label == 1:
+        # TP hit first: reward = tp_pct / sl_pct R
+        r_mult = tp_pct / sl_pct
+    elif first_label == -1:
+        # SL hit first: -1 R
+        r_mult = -1.0
+    else:
+        # Neither hit: use actual forward return / sl_pct
+        exit_price = float(forward_close.iloc[horizon_bars - 1])
+        if not np.isfinite(exit_price) or exit_price <= 0.0:
+            return {key: np.nan}
+        forward_return = (exit_price / entry_price) - 1.0
+        r_mult = forward_return / sl_pct
+    
+    return {key: float(r_mult)}
+
+
 @dataclass
 class TargetGenerationConfig:
     """
