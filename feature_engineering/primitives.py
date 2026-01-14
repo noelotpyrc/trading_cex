@@ -342,3 +342,58 @@ def kalman_filter_slope(series: pd.Series,
         velocities[i] = x[1]  # velocity state
     
     return pd.Series(velocities, index=series.index)
+
+
+# =============================================================================
+# LONG-TERM (DAILY RESAMPLED) FEATURES
+# =============================================================================
+
+def daily_ema_lagged(
+    timestamp: pd.Series,
+    close: pd.Series,
+    span_days: int,
+) -> pd.Series:
+    """
+    Compute EMA on daily-resampled data with 1-day lag to prevent look-ahead bias.
+    
+    This function:
+    1. Resamples 1H close prices to daily (last close of each day)
+    2. Computes EMA with the specified span (in days)
+    3. Shifts the result by 1 day (so at any hour of Day T, you see EMA from Day T-1)
+    4. Broadcasts the daily value back to all 1H bars of that day
+    
+    Args:
+        timestamp: Timestamp series (1H frequency)
+        close: Close price series (1H frequency)
+        span_days: EMA span in days (e.g., 30, 180, 365)
+    
+    Returns:
+        pd.Series: Daily EMA values broadcast to 1H frequency, lagged by 1 day
+    
+    Example:
+        At 2024-01-05 14:00, the returned value is the EMA computed 
+        from daily closes up to 2024-01-04 23:00.
+    """
+    # Build a temporary DataFrame for resampling
+    df = pd.DataFrame({'timestamp': timestamp, 'close': close}).copy()
+    df = df.set_index('timestamp')
+    
+    # Resample to daily (take last close of each day)
+    daily_close = df['close'].resample('1D').last()
+    
+    # Compute EMA on daily data
+    daily_ema = daily_close.ewm(span=span_days, adjust=False).mean()
+    
+    # Shift by 1 day to prevent look-ahead bias
+    # At Day T, we use the EMA value from Day T-1
+    daily_ema_shifted = daily_ema.shift(1)
+    
+    # Broadcast back to 1H: extract date from original timestamps
+    df['date'] = df.index.date
+    daily_ema_shifted.index = daily_ema_shifted.index.date
+    
+    # Map daily values to each 1H bar
+    result = df['date'].map(daily_ema_shifted)
+    result.index = df.index
+    
+    return result.reset_index(drop=True)

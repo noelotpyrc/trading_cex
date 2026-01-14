@@ -611,3 +611,129 @@ def oi_volume_efficiency_signed(oi: pd.Series, volume: pd.Series,
     
     return eff_pos, eff_neg
 # try ratio_window as 48 and 168, norm_window as 168
+
+
+# =============================================================================
+# LONG-TERM TREND FLAGS
+# =============================================================================
+
+def is_above_daily_ema(
+    timestamp: pd.Series,
+    close: pd.Series,
+    span_days: int,
+) -> pd.Series:
+    """
+    Binary flag: 1 if current close is above the lagged daily EMA, 0 otherwise.
+    
+    Uses daily_ema_lagged() which shifts by 1 day to prevent look-ahead bias.
+    At any hour of Day T, the EMA is computed from daily closes up to Day T-1.
+    
+    Args:
+        timestamp: Timestamp series (1H frequency)
+        close: Close price series (1H frequency)
+        span_days: EMA span in days (e.g., 30, 180, 365)
+    
+    Returns:
+        pd.Series: Binary flag (1 = above EMA, 0 = below or equal)
+    """
+    from feature_engineering.primitives import daily_ema_lagged
+    
+    ema_values = daily_ema_lagged(timestamp, close, span_days)
+    return (close > ema_values).astype(int)
+# use span_days 30, 180, 365
+
+
+# =============================================================================
+# LOOKBACK R-MULTIPLE FEATURES
+# =============================================================================
+
+def lookback_avg_r_multiple(
+    r_multiple: pd.Series,
+    window: int,
+    horizon_lag: int,
+    min_periods: int = None,
+) -> pd.Series:
+    """
+    Rolling mean of historical R-multiples.
+    
+    This is a feature that measures "recent regime performance" based on
+    what the average R-multiple outcome has been over the lookback window.
+    
+    The function internally shifts the R-multiple series by horizon_lag bars
+    to prevent look-ahead bias. At time t, we only see R-multiples from
+    trades that entered at t-horizon_lag or earlier and have concluded.
+    
+    Args:
+        r_multiple: R-multiple target series (unshifted)
+        window: Lookback window in bars
+        horizon_lag: Number of bars to shift (typically 24 for 24h horizon)
+        min_periods: Minimum periods for rolling calculation
+    
+    Returns:
+        pd.Series: Rolling mean of lagged R-multiples
+    """
+    if min_periods is None:
+        min_periods = max(1, window // 2)
+    # Shift by horizon_lag to only see concluded trades
+    lagged = r_multiple.shift(horizon_lag)
+    return lagged.rolling(window, min_periods=min_periods).mean()
+# use window 168 (1 week) or 720 (1 month), horizon_lag 24 for 24h targets
+
+
+def lookback_r_multiple_std(
+    r_multiple: pd.Series,
+    window: int,
+    horizon_lag: int,
+    min_periods: int = None,
+) -> pd.Series:
+    """
+    Rolling std of historical R-multiples.
+    
+    Measures volatility/consistency of recent R-multiple outcomes.
+    Shifts by horizon_lag to prevent look-ahead bias.
+    
+    Args:
+        r_multiple: R-multiple target series (unshifted)
+        window: Lookback window in bars
+        horizon_lag: Number of bars to shift (typically 24 for 24h horizon)
+        min_periods: Minimum periods for rolling calculation
+    """
+    if min_periods is None:
+        min_periods = max(1, window // 2)
+    lagged = r_multiple.shift(horizon_lag)
+    return lagged.rolling(window, min_periods=min_periods).std()
+# use window 168 (1 week) or 720 (1 month), horizon_lag 24
+
+
+def lookback_r_multiple_hit_rate(
+    r_multiple: pd.Series,
+    window: int,
+    horizon_lag: int,
+    threshold: float = 0.0,
+    min_periods: int = None,
+) -> pd.Series:
+    """
+    Rolling fraction of R-multiples above a threshold.
+    
+    Default threshold=0 gives "win rate" (positive vs negative outcomes).
+    Use threshold=1.99 for "TP hit rate" (for 2R reward setups).
+    Shifts by horizon_lag to prevent look-ahead bias.
+    
+    Args:
+        r_multiple: R-multiple target series (unshifted)
+        window: Lookback window in bars
+        horizon_lag: Number of bars to shift (typically 24 for 24h horizon)
+        threshold: R-multiple threshold (default 0 for win rate)
+        min_periods: Minimum periods for rolling calculation
+    
+    Returns:
+        pd.Series: Rolling fraction of lagged R-multiples > threshold
+    """
+    if min_periods is None:
+        min_periods = max(1, window // 2)
+    lagged = r_multiple.shift(horizon_lag)
+    wins = (lagged > threshold).astype(float)
+    return wins.rolling(window, min_periods=min_periods).mean()
+# use window 168 or 720, horizon_lag 24, threshold 0 for win rate or 1.99 for TP rate
+
+

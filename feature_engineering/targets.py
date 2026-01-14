@@ -295,6 +295,239 @@ def compute_r_multiple(
     return {key: float(r_mult)}
 
 
+def compute_is_large_move(
+    forward_high: pd.Series,
+    forward_low: pd.Series,
+    entry_price: float,
+    up_pct: float,
+    down_pct: float,
+    horizon_bars: int,
+    *,
+    horizon_label: Optional[str] = None,
+) -> Dict[str, float]:
+    """
+    Compute binary large move indicator based on MFE/MAE thresholds.
+    
+    A large move occurs if either:
+    - MFE >= up_pct (upside threshold hit)
+    - MAE <= -down_pct (downside threshold hit)
+    
+    Args:
+        forward_high: High prices for bars t+1 to t+H
+        forward_low: Low prices for bars t+1 to t+H
+        entry_price: Entry price at bar t
+        up_pct: Upside threshold (e.g., 0.025 for 2.5%)
+        down_pct: Downside threshold (e.g., 0.025 for 2.5%)
+        horizon_bars: Number of forward bars (H)
+        horizon_label: Optional label for the horizon
+    
+    Returns:
+        Dict with key y_large_move_u{up}_d{down}_{horizon} and binary value (1.0 or 0.0)
+    """
+    label = _format_horizon_label(horizon_bars, horizon_label)
+    up_str = f"{float(up_pct):g}"
+    dn_str = f"{float(down_pct):g}"
+    key = f"y_large_move_u{up_str}_d{dn_str}_{label}"
+    
+    # Validate inputs
+    if (
+        forward_high is None
+        or forward_low is None
+        or len(forward_high) < horizon_bars
+        or len(forward_low) < horizon_bars
+        or not np.isfinite(entry_price)
+        or entry_price <= 0.0
+        or up_pct <= 0.0
+        or down_pct <= 0.0
+    ):
+        return {key: np.nan}
+    
+    window_high = forward_high.iloc[:horizon_bars]
+    window_low = forward_low.iloc[:horizon_bars]
+    
+    max_high = float(np.nanmax(window_high.values))
+    min_low = float(np.nanmin(window_low.values))
+    
+    if not np.isfinite(max_high) or not np.isfinite(min_low):
+        return {key: np.nan}
+    
+    mfe = max_high / entry_price - 1.0
+    mae = min_low / entry_price - 1.0
+    
+    is_large = 1.0 if (mfe >= up_pct or mae <= -down_pct) else 0.0
+    return {key: is_large}
+
+
+def compute_first_hit_direction(
+    forward_high: pd.Series,
+    forward_low: pd.Series,
+    entry_price: float,
+    up_pct: float,
+    down_pct: float,
+    horizon_bars: int,
+    *,
+    horizon_label: Optional[str] = None,
+    tie_policy: TiePolicy = "conservative",
+) -> Dict[str, float]:
+    """
+    Compute which barrier is hit first (strictly before the other).
+    
+    Excludes ties and cases where neither barrier is hit.
+    
+    Args:
+        forward_high: High prices for bars t+1 to t+H
+        forward_low: Low prices for bars t+1 to t+H
+        entry_price: Entry price at bar t
+        up_pct: Upside threshold (e.g., 0.025 for 2.5%)
+        down_pct: Downside threshold (e.g., 0.025 for 2.5%)
+        horizon_bars: Number of forward bars (H)
+        horizon_label: Optional label for the horizon
+        tie_policy: Not used; ties always return NaN
+    
+    Returns:
+        Dict with key y_first_hit_dir_u{up}_d{down}_{horizon}
+        Values: 1.0 = MFE hit first, 0.0 = MAE hit first, NaN = tie or neither
+    """
+    label = _format_horizon_label(horizon_bars, horizon_label)
+    up_str = f"{float(up_pct):g}"
+    dn_str = f"{float(down_pct):g}"
+    key = f"y_first_hit_dir_u{up_str}_d{dn_str}_{label}"
+    
+    # Validate inputs
+    if (
+        forward_high is None
+        or forward_low is None
+        or len(forward_high) < horizon_bars
+        or len(forward_low) < horizon_bars
+        or not np.isfinite(entry_price)
+        or entry_price <= 0.0
+        or up_pct <= 0.0
+        or down_pct <= 0.0
+    ):
+        return {key: np.nan}
+    
+    upper_threshold = entry_price * (1.0 + up_pct)
+    lower_threshold = entry_price * (1.0 - down_pct)
+    
+    first_upper_idx = None
+    first_lower_idx = None
+    
+    for i in range(min(horizon_bars, len(forward_high))):
+        bar_high = float(forward_high.iloc[i])
+        bar_low = float(forward_low.iloc[i])
+        
+        if first_upper_idx is None and np.isfinite(bar_high) and bar_high >= upper_threshold:
+            first_upper_idx = i
+        if first_lower_idx is None and np.isfinite(bar_low) and bar_low <= lower_threshold:
+            first_lower_idx = i
+        
+        # Early exit if both found
+        if first_upper_idx is not None and first_lower_idx is not None:
+            break
+    
+    # Determine result
+    if first_upper_idx is None and first_lower_idx is None:
+        # Neither hit
+        return {key: np.nan}
+    elif first_upper_idx is not None and first_lower_idx is None:
+        # Only upper hit
+        return {key: 1.0}
+    elif first_lower_idx is not None and first_upper_idx is None:
+        # Only lower hit
+        return {key: 0.0}
+    elif first_upper_idx < first_lower_idx:
+        # Upper hit strictly first
+        return {key: 1.0}
+    elif first_lower_idx < first_upper_idx:
+        # Lower hit strictly first
+        return {key: 0.0}
+    else:
+        # Tie (same bar)
+        return {key: np.nan}
+
+
+def compute_time_diff_target(
+    forward_high: pd.Series,
+    forward_low: pd.Series,
+    entry_price: float,
+    up_pct: float,
+    down_pct: float,
+    horizon_bars: int,
+    *,
+    horizon_label: Optional[str] = None,
+) -> Dict[str, float]:
+    """
+    Compute time difference regression target.
+    
+    t↑ = first time index (1...H) upper barrier is hit, else H+1
+    t↓ = first time index lower barrier is hit, else H+1
+    y = clip(t↓ - t↑, -H, H) / H
+    
+    Positive values: upper barrier hit earlier (upward bias)
+    Negative values: lower barrier hit earlier (downward bias)
+    
+    Args:
+        forward_high: High prices for bars t+1 to t+H
+        forward_low: Low prices for bars t+1 to t+H
+        entry_price: Entry price at bar t
+        up_pct: Upside threshold (e.g., 0.025 for 2.5%)
+        down_pct: Downside threshold (e.g., 0.025 for 2.5%)
+        horizon_bars: Number of forward bars (H)
+        horizon_label: Optional label for the horizon
+    
+    Returns:
+        Dict with key y_time_diff_u{up}_d{down}_{horizon}
+        Values: normalized time difference in [-1, 1]
+    """
+    label = _format_horizon_label(horizon_bars, horizon_label)
+    up_str = f"{float(up_pct):g}"
+    dn_str = f"{float(down_pct):g}"
+    key = f"y_time_diff_u{up_str}_d{dn_str}_{label}"
+    
+    # Validate inputs
+    if (
+        forward_high is None
+        or forward_low is None
+        or len(forward_high) < horizon_bars
+        or len(forward_low) < horizon_bars
+        or not np.isfinite(entry_price)
+        or entry_price <= 0.0
+        or up_pct <= 0.0
+        or down_pct <= 0.0
+    ):
+        return {key: np.nan}
+    
+    upper_threshold = entry_price * (1.0 + up_pct)
+    lower_threshold = entry_price * (1.0 - down_pct)
+    
+    # Find first hit for each barrier (1-indexed, or H+1 if no hit)
+    t_up = horizon_bars + 1
+    t_down = horizon_bars + 1
+    
+    for i in range(min(horizon_bars, len(forward_high))):
+        bar_high = float(forward_high.iloc[i])
+        bar_low = float(forward_low.iloc[i])
+        
+        if t_up == horizon_bars + 1 and np.isfinite(bar_high) and bar_high >= upper_threshold:
+            t_up = i + 1  # 1-indexed
+        if t_down == horizon_bars + 1 and np.isfinite(bar_low) and bar_low <= lower_threshold:
+            t_down = i + 1  # 1-indexed
+        
+        # Early exit if both found
+        if t_up != horizon_bars + 1 and t_down != horizon_bars + 1:
+            break
+    
+    # Return NaN if neither barrier is hit
+    if t_up == horizon_bars + 1 and t_down == horizon_bars + 1:
+        return {key: np.nan}
+    
+    diff = t_down - t_up
+    clipped = max(-horizon_bars, min(diff, horizon_bars))
+    y = clipped / horizon_bars
+    
+    return {key: float(y)}
+
+
 @dataclass
 class TargetGenerationConfig:
     """
@@ -399,6 +632,5 @@ def extract_forward_window(
     if start >= len(data):
         return data.iloc[0:0]
     return data.iloc[start:end]
-
 
 
