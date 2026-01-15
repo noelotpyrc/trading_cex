@@ -17,7 +17,9 @@ import numpy as np
 from .primitives import (
     FAST_WINDOW, SLOW_WINDOW, LONG_WINDOW, ZSCORE_MIN_PERIODS,
     rolling_mean, rolling_std, rolling_corr, ema, pct_change,
-    parkinson_volatility, historical_volatility, rsi, adx, zscore,
+    rolling_highest, rolling_lowest, rolling_median,
+    parkinson_volatility, historical_volatility, ewma_volatility, true_range,
+    rsi, adx, zscore,
     rolling_vwap, time_features, var_cvar, linear_regression_slope,
     kalman_filter_slope
 )
@@ -737,3 +739,505 @@ def lookback_r_multiple_hit_rate(
 # use window 168 or 720, horizon_lag 24, threshold 0 for win rate or 1.99 for TP rate
 
 
+# =============================================================================
+# VOL-NORMALIZED MOMENTUM
+# =============================================================================
+
+def vol_normalized_momentum(close: pd.Series, ret_window: int, vol_span: int,
+                             scale_by_sqrt_k: bool = True,
+                             eps: float = 1e-9) -> pd.Series:
+    """
+    Momentum in volatility units: r_t(k) / (σ_t × √k).
+    
+    This is a "t-stat-ish" scaling that normalizes returns by volatility
+    and time horizon, making momentum comparable across different windows.
+    
+    Args:
+        close: Close price series
+        ret_window: Return lookback (k) in bars (e.g., 6, 12, 24, 48)
+        vol_span: EWMA volatility span in bars (e.g., 48, 168)
+        scale_by_sqrt_k: If True, divide by √k for time-scaling
+        eps: Small epsilon for numerical stability
+    
+    Returns:
+        Vol-normalized momentum signal
+    """
+    r_k = np.log(close / close.shift(ret_window))
+    sigma = ewma_volatility(close, vol_span)
+    denom = sigma * np.sqrt(ret_window) if scale_by_sqrt_k else sigma
+    return r_k / (denom + eps)
+# Use: ret_window ∈ {12, 24, 48}, vol_span ∈ {48, 168}
+
+
+# =============================================================================
+# BREAKOUT STRENGTH + CLOSE LOCATION
+# =============================================================================
+
+def breakout_distance(high: pd.Series, low: pd.Series, close: pd.Series,
+                      window: int, vol_span: int, eps: float = 1e-9) -> pd.Series:
+    """
+    Breakout distance: (C - mid) / σ, where mid = (HH + LL) / 2.
+    
+    Measures how far price is from the midpoint of the N-bar range,
+    normalized by volatility. Positive = near highs, negative = near lows.
+    
+    Args:
+        high, low, close: OHLC data
+        window: Lookback for HH/LL (e.g., 24, 48, 72)
+        vol_span: EWMA volatility span (e.g., 168)
+    """
+    hh = rolling_highest(high, window)
+    ll = rolling_lowest(low, window)
+    mid = (hh + ll) / 2
+    sigma = ewma_volatility(close, vol_span)
+    dist = np.log(close / mid)
+    return dist / (sigma + eps)
+# Use: window ∈ {168, 720, 2160}, vol_span = 168
+
+
+def close_location_value(high: pd.Series, low: pd.Series, close: pd.Series,
+                         window: int, eps: float = 1e-9) -> pd.Series:
+    """
+    Close location within N-bar range: (C - LL) / (HH - LL) ∈ [0, 1].
+    
+    0 = close at recent lows, 1 = close at recent highs.
+    
+    Args:
+        high, low, close: OHLC data
+        window: Lookback for HH/LL (e.g., 24, 48, 72)
+    """
+    hh = rolling_highest(high, window)
+    ll = rolling_lowest(low, window)
+    clv = (close - ll) / (hh - ll + eps)
+    return clv.clip(0.0, 1.0)
+# Use: window ∈ {168, 720, 2160}
+
+
+def close_location_value_signed(high: pd.Series, low: pd.Series, close: pd.Series,
+                                 window: int, eps: float = 1e-9) -> pd.Series:
+    """
+    Close location signed: 2 × CLV - 1 ∈ [-1, +1].
+    
+    -1 = close at recent lows, +1 = close at recent highs.
+    """
+    return 2 * close_location_value(high, low, close, window, eps) - 1
+# Use: window ∈ {168, 720, 2160}
+
+
+# =============================================================================
+# RANGE EXPANSION + CLOSE LOCATION
+# =============================================================================
+
+def range_expansion(high: pd.Series, low: pd.Series, close: pd.Series,
+                    window: int, eps: float = 1e-9) -> pd.Series:
+    """
+    Range expansion: TR / median(TR, W).
+    
+    Values > 1 indicate larger-than-typical range (expansion),
+    values < 1 indicate smaller-than-typical range (contraction).
+    
+    Args:
+        high, low, close: OHLC data
+        window: Lookback for median TR (e.g., 48, 168)
+    """
+    tr = true_range(high, low, close)
+    tr_med = rolling_median(tr, window).shift(1)
+    return tr / (tr_med + eps)
+# Use: window ∈ {48, 168, 720}
+
+
+def close_in_range(high: pd.Series, low: pd.Series, close: pd.Series,
+                   eps: float = 1e-9) -> pd.Series:
+    """
+    Within-bar close location: (C - L) / (H - L) ∈ [0, 1].
+    
+    0 = closed at bar low, 1 = closed at bar high.
+    Single-bar feature (no window).
+    """
+    cir = (close - low) / (high - low + eps)
+    return cir.clip(0.0, 1.0)
+
+
+def close_in_range_signed(high: pd.Series, low: pd.Series, close: pd.Series,
+                          eps: float = 1e-9) -> pd.Series:
+    """
+    Within-bar close location signed: 2 × CIR - 1 ∈ [-1, +1].
+    
+    -1 = closed at bar low, +1 = closed at bar high.
+    """
+    return 2 * close_in_range(high, low, close, eps) - 1
+
+
+def impulse_signal(high: pd.Series, low: pd.Series, close: pd.Series,
+                   re_window: int, eps: float = 1e-9) -> pd.Series:
+    """
+    Impulse signal: log(range_expansion) × close_in_range_signed.
+    
+    Combines "big range" with "strong close" into a single signal:
+    - Big range + close near high → positive (bullish impulse)
+    - Big range + close near low → negative (bearish impulse)
+    - Big range + close in middle → near 0 (indecision/whipsaw)
+    
+    Args:
+        high, low, close: OHLC data
+        re_window: Lookback for range expansion median (e.g., 48, 168)
+    """
+    re = range_expansion(high, low, close, re_window, eps)
+    cir2 = close_in_range_signed(high, low, close, eps)
+    return np.log1p(re - 1.0) * cir2
+# Use: re_window ∈ {48, 168, 720}
+
+
+# =============================================================================
+# ORDER FLOW PROXIES (OHLCV ONLY)
+# =============================================================================
+
+def close_location_value_bar(high: pd.Series, low: pd.Series, close: pd.Series,
+                              eps: float = 1e-9) -> pd.Series:
+    """
+    CLV within bar: [(C-L) - (H-C)] / (H-L) ∈ [-1, +1].
+    
+    This is the standard CLV formula used in Accumulation/Distribution.
+    Equivalent to 2×CIR - 1, but computed directly.
+    """
+    clv = ((close - low) - (high - close)) / (high - low + eps)
+    return clv.clip(-1.0, 1.0)
+
+def money_flow_volume(high: pd.Series, low: pd.Series, close: pd.Series,
+                      volume: pd.Series) -> pd.Series:
+    """
+    Money Flow Volume: CLV × Volume.
+    
+    Positive when close is near high (accumulation),
+    negative when close is near low (distribution).
+    """
+    clv = close_location_value_bar(high, low, close)
+    return clv * volume
+
+
+def accumulation_distribution(high: pd.Series, low: pd.Series, close: pd.Series,
+                              volume: pd.Series, window: int) -> pd.Series:
+    """
+    Accumulation/Distribution ratio: Σ(MFV, K) / Σ(V, K).
+    
+    Normalized flow indicator. Positive = net accumulation,
+    negative = net distribution over the window.
+    
+    Args:
+        high, low, close, volume: OHLCV data
+        window: Lookback window (e.g., 6, 12, 24)
+    """
+    mfv = money_flow_volume(high, low, close, volume)
+    mfv_sum = mfv.rolling(window, min_periods=window).sum()
+    vol_sum = volume.rolling(window, min_periods=window).sum()
+    ad = mfv_sum / (vol_sum + 1e-9)
+    return ad.clip(-1.0, 1.0)
+# Use: window ∈ {24, 48, 168}
+
+
+def signed_volume_proxy(close: pd.Series, volume: pd.Series) -> pd.Series:
+    """
+    Signed volume: sign(ΔC) × V.
+    
+    Simple proxy for directional volume when tick data unavailable.
+    """
+    return np.sign(np.log(close).diff()) * volume
+
+
+def cumulative_signed_volume(close: pd.Series, volume: pd.Series,
+                             window: int) -> pd.Series:
+    """
+    Cumulative signed volume ratio: Σ(signed_vol) / Σ(V).
+    
+    Net buy/sell pressure over the window, normalized to [-1, +1].
+    
+    Args:
+        close, volume: Price and volume series
+        window: Lookback window (e.g., 6, 12, 24)
+    """
+    signed_vol = signed_volume_proxy(close, volume)
+    sv_sum = signed_vol.rolling(window, min_periods=window).sum()
+    vol_sum = volume.rolling(window, min_periods=window).sum()
+    csv = sv_sum / (vol_sum + 1e-9)
+    return csv.clip(-1.0, 1.0)
+# Use: window ∈ {24, 48, 168}
+
+
+def volume_shock(volume: pd.Series, window: int, eps: float = 1e-9) -> pd.Series:
+    """
+    Volume shock: V / median(V, W).
+    
+    Values > 1 indicate higher-than-typical volume.
+    Useful for gating signals (e.g., only trade on high-volume bars).
+    
+    Args:
+        volume: Volume series
+        window: Lookback for median (e.g., 48, 168)
+    """
+    med = rolling_median(volume, window).shift(1)
+    vs = volume / (med + eps)
+    return vs
+# Use: window ∈ {168, 720}
+
+
+# =============================================================================
+# PERP ORDER FLOW FEATURES (using num_trades and taker_buy_volume)
+# =============================================================================
+
+# --- Section 1: Taker Imbalance (Core Direction Signal) ---
+
+def taker_buy_ratio(taker_buy: pd.Series, volume: pd.Series,
+                    eps: float = 1e-9) -> pd.Series:
+    """
+    Raw taker buy ratio: TB / V ∈ [0, 1].
+    
+    0.5 = balanced, >0.5 = more aggressive buying, <0.5 = more aggressive selling.
+    """
+    r = taker_buy / (volume + eps)
+    return r.clip(0.0, 1.0)
+
+def taker_imbalance(taker_buy: pd.Series, volume: pd.Series,
+                    eps: float = 1e-9) -> pd.Series:
+    """
+    Signed taker imbalance: (2*TB - V) / V ∈ [-1, +1].
+    
+    Equivalent to (TB - TS) / V where TS = V - TB (taker sell).
+    +1 = all taker buys, -1 = all taker sells.
+    """
+    den = volume.clip(lower=eps)
+    imb = (2 * taker_buy - volume) / den
+    return imb.clip(-1.0, 1.0)
+
+
+def taker_imbalance_ema(taker_buy: pd.Series, volume: pd.Series,
+                         span: int, eps: float = 1e-9) -> pd.Series:
+    """
+    Smoothed taker imbalance: EWMA of imbalance.
+    
+    Reduces bar-to-bar noise while preserving directional signal.
+    
+    Args:
+        taker_buy, volume: Per-bar taker buy and total volume
+        span: EWMA span (e.g., 24, 48, 168)
+    """
+    imb = taker_imbalance(taker_buy, volume, eps)
+    return ema(imb, span)
+# Use: span ∈ {24, 48, 168}
+
+def taker_imbalance_ema_alt(taker_buy: pd.Series, volume: pd.Series,
+                         span: int, eps: float = 1e-9) -> pd.Series:
+    net = (2*taker_buy - volume)
+    num = net.ewm(span=span, adjust=False, min_periods=max(2, span//5)).mean()
+    den = volume.ewm(span=span, adjust=False, min_periods=max(2, span//5)).mean().clip(lower=eps)
+    return (num / den).clip(-1.0, 1.0)
+
+
+def cumulative_taker_imbalance(taker_buy: pd.Series, volume: pd.Series,
+                                window: int, eps: float = 1e-9) -> pd.Series:
+    """
+    Cumulative taker imbalance: Σ(TB - TS) / Σ(V) over window.
+    
+    Net directional pressure over the lookback period.
+    
+    Args:
+        taker_buy, volume: Per-bar taker buy and total volume
+        window: Lookback window (e.g., 6, 12, 24)
+    """
+    taker_sell = volume - taker_buy
+    net_imb = (taker_buy - taker_sell).rolling(window).sum()
+    vol_sum = volume.rolling(window).sum()
+    return net_imb / (vol_sum + eps)
+# Use: window ∈ {24, 48, 168}
+
+
+# --- Section 2: Intensity / Participation ---
+
+def trades_per_volume(num_trades: pd.Series, volume: pd.Series,
+                      eps: float = 1e-9) -> pd.Series:
+    """
+    Trades per volume: N / V.
+    
+    High = many small trades (retail), low = few large trades (institutional).
+    """
+    den = volume.replace(0, np.nan)
+    tpv = num_trades / den
+    return np.log1p(tpv)
+
+
+def avg_trade_size(volume: pd.Series, num_trades: pd.Series,
+                   eps: float = 1e-9) -> pd.Series:
+    """
+    Average trade size: V / N.
+    
+    Inverse of trades_per_volume. Large = whale activity.
+    """
+    den = num_trades.replace(0, np.nan)
+    ats = volume / den
+    return np.log1p(ats)
+
+
+def trade_count_shock(num_trades: pd.Series, window: int,
+                      eps: float = 1e-9) -> pd.Series:
+    """
+    Trade count shock: N / median(N, W).
+    
+    Activity spike indicator. Values > 1 indicate more trades than typical.
+    
+    Args:
+        num_trades: Number of trades per bar
+        window: Lookback for median (e.g., 48, 168)
+    """
+    med = rolling_median(num_trades, window).shift(1)
+    shock = num_trades / (med + eps)
+    return shock
+# Use: window ∈ {48, 168}
+
+
+def crowdedness(num_trades: pd.Series, volume: pd.Series,
+                window: int, eps: float = 1e-9) -> pd.Series:
+    """
+    Crowdedness proxy: log(Nshock) - log(Vshock).
+    
+    Positive = many trades but little volume (churny, retail-dominated).
+    Negative = few trades but large volume (institutional).
+    
+    Args:
+        num_trades, volume: Per-bar values
+        window: Lookback for shock calculation (e.g., 48, 168)
+    """
+    n_shock = trade_count_shock(num_trades, window, eps)
+    v_shock = volume_shock(volume, window, eps)
+    return np.log1p(n_shock - 1.0) - np.log1p(v_shock - 1.0)
+# Use: window ∈ {48, 168}
+
+
+# --- Section 3: Flow × Return Alignment ---
+
+def flow_return_alignment(taker_buy: pd.Series, volume: pd.Series,
+                          close: pd.Series, eps: float = 1e-9) -> pd.Series:
+    """
+    Flow-return alignment: imb × r (per-bar).
+    
+    Positive = flow aligned with price move (buys on up, sells on down).
+    Negative = flow opposing price move.
+    """
+    imb = taker_imbalance(taker_buy, volume, eps)
+    r = np.log(close / close.shift(1))
+    return imb * r
+
+
+def rolling_flow_alignment(taker_buy: pd.Series, volume: pd.Series,
+                           close: pd.Series, window: int,
+                           eps: float = 1e-9) -> pd.Series:
+    """
+    Rolling flow alignment: Σ(imb × r) over window.
+    
+    Cumulative measure of how well flow predicts price direction.
+    
+    Args:
+        taker_buy, volume, close: Per-bar values
+        window: Lookback window (e.g., 12, 24, 48)
+    """
+    align = flow_return_alignment(taker_buy, volume, close, eps)
+    return align.rolling(window).sum()
+# Use: window ∈ {24, 48, 168}
+
+
+def flow_efficiency(taker_buy: pd.Series, volume: pd.Series,
+                    close: pd.Series, window: int,
+                    eps: float = 1e-9) -> pd.Series:
+    """
+    Flow efficiency: Σ(r) / Σ(imb) over window.
+    
+    Price move per unit of imbalance. High = efficient flow (moves price).
+    Clip denominator to avoid explosions when net imbalance is near zero.
+    
+    Args:
+        taker_buy, volume, close: Per-bar values
+        window: Lookback window (e.g., 6, 12, 24)
+    """
+    imb = taker_imbalance(taker_buy, volume, eps)
+    r = np.log(close / close.shift(1))
+
+    sum_r = r.rolling(window, min_periods=window).sum()
+    sum_imb = imb.rolling(window, min_periods=window).sum()
+
+    safe_den = np.sign(sum_imb) * np.maximum(sum_imb.abs(), eps)
+    return sum_r / safe_den
+# Use: window ∈ {24, 48, 168}
+
+
+# --- Section 4: Absorption / Price Impact ---
+
+def price_impact(taker_buy: pd.Series, volume: pd.Series,
+                 close: pd.Series, eps: float = 1e-9) -> pd.Series:
+    """
+    Price impact proxy: |r| / |imb|.
+    
+    High = small imbalance moves price a lot (thin liquidity).
+    Low = large imbalance moves price little (absorption/thick book).
+    """
+    imb = taker_imbalance(taker_buy, volume, eps)
+    r = np.log(close / close.shift(1))
+    impact = r.abs() / (imb.abs() + eps)
+    return np.log1p(impact)
+
+
+# --- Section 5: Churn / Reversal Risk ---
+
+def imbalance_variance(taker_buy: pd.Series, volume: pd.Series,
+                       window: int, eps: float = 1e-9) -> pd.Series:
+    """
+    Imbalance variance: Var(imb) over window.
+    
+    High variance = unstable/noisy flow, low variance = consistent direction.
+    
+    Args:
+        taker_buy, volume: Per-bar values
+        window: Lookback window (e.g., 12, 24)
+    """
+    imb = taker_imbalance(taker_buy, volume, eps)
+    return imb.rolling(window).var()
+# Use: window ∈ {24, 48, 168}
+
+
+def imbalance_sign_flips(taker_buy: pd.Series, volume: pd.Series,
+                         window: int, eps: float = 1e-9) -> pd.Series:
+    """
+    Imbalance sign flip count over window.
+    
+    High flips = choppy two-sided flow, low flips = sustained direction.
+    Normalized by (window - 1) to get flip rate ∈ [0, 1].
+    
+    Args:
+        taker_buy, volume: Per-bar values
+        window: Lookback window (e.g., 12, 24)
+    """
+    imb = taker_imbalance(taker_buy, volume, eps)
+    thr = 0.05  # or use a rolling percentile threshold
+    s = np.where(imb > thr, 1, np.where(imb < -thr, -1, 0))
+    s = pd.Series(s, index=imb.index)
+
+    flips = ((s != s.shift(1)) & (s != 0) & (s.shift(1) != 0)).astype(float)
+    return flips.rolling(window, min_periods=window).sum() / (window - 1)
+# Use: window ∈ {24, 48, 168}
+
+
+def churn_ratio(taker_buy: pd.Series, volume: pd.Series,
+                window: int, eps: float = 1e-9) -> pd.Series:
+    """
+    Churn ratio: Σ|imb| / |Σ(imb)| over window.
+    
+    High churn (>>1) = lots of activity but nets out (two-sided chop).
+    Low churn (~1) = consistent directional flow.
+    
+    Args:
+        taker_buy, volume: Per-bar values
+        window: Lookback window (e.g., 12, 24)
+    """
+    imb = taker_imbalance(taker_buy, volume, eps)
+    sum_abs_imb = imb.abs().rolling(window).sum()
+    abs_sum_imb = imb.rolling(window).sum().abs()
+    churn = sum_abs_imb / (abs_sum_imb + eps)
+    return np.log1p(churn - 1.0)  # equals log(churn) when churn>0, nicer near 1
+# Use: window ∈ {24, 48, 168}

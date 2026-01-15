@@ -528,6 +528,71 @@ def compute_time_diff_target(
     return {key: float(y)}
 
 
+def compute_mfe_mae_ratio(
+    forward_high: pd.Series,
+    forward_low: pd.Series,
+    entry_price: float,
+    horizon_bars: int,
+    *,
+    horizon_label: Optional[str] = None,
+    epsilon: float = 1e-8,
+) -> Dict[str, float]:
+    """
+    Compute MFE-MAE ratio target for measuring directional bias.
+    
+    y = (MFE - |MAE|) / (MFE + |MAE| + epsilon)
+    
+    Value range: (-1, 1)
+    - Positive: MFE dominates (upward bias)
+    - Negative: |MAE| dominates (downward bias)
+    - Near 0: Balanced or small moves
+    
+    Args:
+        forward_high: High prices for bars t+1 to t+H
+        forward_low: Low prices for bars t+1 to t+H
+        entry_price: Entry price at bar t
+        horizon_bars: Number of forward bars (H)
+        horizon_label: Optional label for the horizon
+        epsilon: Small constant to avoid division by zero
+    
+    Returns:
+        Dict with key y_mfe_mae_ratio_{horizon}
+        Values: normalized ratio in (-1, 1)
+    """
+    label = _format_horizon_label(horizon_bars, horizon_label)
+    key = f"y_mfe_mae_ratio_{label}"
+    
+    # Validate inputs
+    if (
+        forward_high is None
+        or forward_low is None
+        or len(forward_high) < horizon_bars
+        or len(forward_low) < horizon_bars
+        or not np.isfinite(entry_price)
+        or entry_price <= 0.0
+    ):
+        return {key: np.nan}
+    
+    window_high = forward_high.iloc[:horizon_bars]
+    window_low = forward_low.iloc[:horizon_bars]
+    
+    max_high = float(np.nanmax(window_high.values))
+    min_low = float(np.nanmin(window_low.values))
+    
+    if not np.isfinite(max_high) or not np.isfinite(min_low):
+        return {key: np.nan}
+    
+    mfe = max_high / entry_price - 1.0  # Always >= 0
+    mae = min_low / entry_price - 1.0   # Always <= 0
+    abs_mae = abs(mae)
+    
+    numerator = mfe - abs_mae
+    denominator = mfe + abs_mae + epsilon
+    
+    ratio = numerator / denominator
+    
+    return {key: float(ratio)}
+
 @dataclass
 class TargetGenerationConfig:
     """

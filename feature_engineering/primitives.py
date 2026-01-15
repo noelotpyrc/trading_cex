@@ -45,6 +45,27 @@ def rolling_corr(series1: pd.Series, series2: pd.Series, window: int, min_period
     return series1.rolling(window, min_periods=min_periods).corr(series2)
 
 
+def rolling_highest(series: pd.Series, window: int, min_periods: int = None) -> pd.Series:
+    """Rolling maximum (highest high)."""
+    if min_periods is None:
+        min_periods = max(1, window // 4)
+    return series.rolling(window, min_periods=min_periods).max()
+
+
+def rolling_lowest(series: pd.Series, window: int, min_periods: int = None) -> pd.Series:
+    """Rolling minimum (lowest low)."""
+    if min_periods is None:
+        min_periods = max(1, window // 4)
+    return series.rolling(window, min_periods=min_periods).min()
+
+
+def rolling_median(series: pd.Series, window: int, min_periods: int = None) -> pd.Series:
+    """Rolling median."""
+    if min_periods is None:
+        min_periods = max(1, window // 4)
+    return series.rolling(window, min_periods=min_periods).median()
+
+
 def ema(series: pd.Series, span: int) -> pd.Series:
     """Exponential moving average."""
     return series.ewm(span=span, adjust=False).mean()
@@ -86,6 +107,37 @@ def historical_volatility(close: pd.Series, window: int, annualize: bool = True)
     if annualize:
         vol = vol * np.sqrt(365 * 24)  # 1H bars, 365 days
     return vol
+
+
+def ewma_volatility(close: pd.Series, span: int) -> pd.Series:
+    """
+    EWMA volatility: sqrt(EWMA of squared log returns).
+    
+    This is the vol estimator suggested in the feature ideas doc for
+    normalizing momentum signals. More reactive than rolling std.
+    
+    Args:
+        close: Close price series
+        span: EWMA span in bars (e.g., 48, 168)
+    
+    Returns:
+        Per-bar volatility estimate (not annualized)
+    """
+    log_ret = np.log(close / close.shift(1))
+    return np.sqrt(log_ret.pow(2).ewm(span=span, adjust=False).mean())
+
+
+def true_range(high: pd.Series, low: pd.Series, close: pd.Series) -> pd.Series:
+    """
+    True Range: max(H-L, |H-C_{t-1}|, |L-C_{t-1}|).
+    
+    Accounts for gaps between bars, unlike simple H-L range.
+    """
+    tr1 = (high - low).abs()
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    return pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
 
 
 # =============================================================================
