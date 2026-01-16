@@ -645,6 +645,132 @@ def is_above_daily_ema(
 # use span_days 30, 180, 365
 
 
+def ema_stack_flag(
+    timestamp: pd.Series,
+    close: pd.Series,
+) -> pd.Series:
+    """
+    Bull/Bear EMA stack flag: EMA30 > EMA90 > EMA180.
+    
+    Returns:
+        +1 = bullish stack (EMA30 > EMA90 > EMA180)
+        -1 = bearish stack (EMA30 < EMA90 < EMA180)
+         0 = mixed/neutral
+    """
+    from feature_engineering.primitives import daily_ema_lagged
+    
+    ema30 = daily_ema_lagged(timestamp, close, 30)
+    ema90 = daily_ema_lagged(timestamp, close, 90)
+    ema180 = daily_ema_lagged(timestamp, close, 180)
+    
+    bullish = (ema30 > ema90) & (ema90 > ema180)
+    bearish = (ema30 < ema90) & (ema90 < ema180)
+    
+    result = pd.Series(0, index=close.index)
+    result[bullish] = 1
+    result[bearish] = -1
+    return result
+
+
+def return_efficiency(close: pd.Series, window: int, eps: float = 1e-9) -> pd.Series:
+    """
+    Return efficiency: net return / sum of absolute bar-to-bar changes.
+    
+    Measures how "direct" the path was to achieve the net return.
+    +1 = straight up, -1 = straight down, 0 = choppy with no net change.
+    
+    Formula: (close_t - close_{t-window}) / sum(abs(close.diff()), window)
+    
+    Args:
+        close: Close price series
+        window: Lookback window
+    
+    Returns:
+        pd.Series: Efficiency ratio in [-1, +1]
+    """
+    net_return = close - close.shift(window)
+    abs_path = close.diff().abs().rolling(window, min_periods=window).sum()
+    efficiency = net_return / (abs_path + eps)
+    return efficiency.clip(-1.0, 1.0)
+# Use: window ∈ {48, 168, 720}
+
+
+def high_low_squeeze(
+    high: pd.Series,
+    low: pd.Series,
+    range_window: int,
+    median_window: int,
+    eps: float = 1e-9,
+) -> pd.Series:
+    """
+    High-low squeeze: current range vs typical range.
+    
+    Formula: (HH_range_window - LL_range_window) / median(HH-LL, median_window)
+    
+    Values < 1 indicate compression/squeeze, > 1 indicate expansion.
+    
+    Args:
+        high, low: High/low price series
+        range_window: Window for rolling highest high and lowest low
+        median_window: Window for median of rolling ranges
+    
+    Returns:
+        pd.Series: Squeeze ratio (shifted by 1 to avoid look-ahead)
+    """
+    from feature_engineering.primitives import rolling_highest, rolling_lowest, rolling_median
+    
+    hh = rolling_highest(high, range_window)
+    ll = rolling_lowest(low, range_window)
+    current_range = hh - ll
+    
+    # Use rolling median of current_range (not bar range)
+    typical_range = rolling_median(current_range, median_window).shift(1)
+    
+    squeeze = current_range / (typical_range + eps)
+    return np.log1p(squeeze.clip(0, 10) - 1)  # log transform, cap at 10x
+# Use: range_window ∈ {168, 720}, median_window = 720 for 168, 2160 for 720
+
+
+def drawdown_distance(close: pd.Series, window: int) -> pd.Series:
+    """
+    Drawdown distance: log(close / rolling_max(close, window)).
+    
+    Always <= 0. More negative = deeper drawdown from recent high.
+    
+    Args:
+        close: Close price series
+        window: Lookback for rolling max
+    
+    Returns:
+        pd.Series: Log drawdown distance (<= 0)
+    """
+    from feature_engineering.primitives import rolling_highest
+    
+    rolling_high = rolling_highest(close, window)
+    return np.log(close / rolling_high)
+# Use: window ∈ {168, 720, 2160}
+
+
+def breakout_distance_from_low(close: pd.Series, window: int) -> pd.Series:
+    """
+    Breakout distance from low: log(close / rolling_min(close, window)).
+    
+    Always >= 0. More positive = further above recent low.
+    
+    Args:
+        close: Close price series
+        window: Lookback for rolling min
+    
+    Returns:
+        pd.Series: Log breakout distance (>= 0)
+    """
+    from feature_engineering.primitives import rolling_lowest
+    
+    rolling_low = rolling_lowest(close, window)
+    return np.log(close / rolling_low)
+# Use: window ∈ {168, 720, 2160}
+
+
 # =============================================================================
 # LOOKBACK R-MULTIPLE FEATURES
 # =============================================================================
