@@ -336,3 +336,73 @@ def median_shift_norm(
         "med_norm": float(med_norm) if np.isfinite(med_norm) else np.nan,
     })
     return float(med_norm) if np.isfinite(med_norm) else np.nan, out
+
+
+def conditional_target_stats(
+    x: pd.Series,
+    y: pd.Series,
+    x_quantile: float = 0.9,
+    y_quantiles: list[float] | None = None,
+    direction: Literal["above", "below"] = "above",
+) -> Tuple[Dict[str, float], Dict[str, Any]]:
+    """
+    Compute target (y) statistics conditioned on feature (x) being above/below a percentile.
+
+    Args:
+        x: Feature series
+        y: Target series
+        x_quantile: Percentile threshold for x (default 0.9 = top 10%)
+        y_quantiles: Optional list of quantiles to compute for y (e.g., [0.1, 0.25, 0.75, 0.9])
+        direction: "above" to filter x >= threshold, "below" for x <= threshold
+
+    Returns:
+        stats: Dict with 'mean', 'median', and optional quantile keys like 'q10', 'q90'
+        info: Dict with metadata (n, n_filtered, x_threshold, etc.)
+    """
+    if not (0 < x_quantile < 1):
+        raise ValueError("x_quantile must be in (0, 1)")
+
+    df = pd.concat([x.rename("x"), y.rename("y")], axis=1).dropna()
+    if df.empty:
+        return {}, {"n": 0, "n_filtered": 0}
+
+    x_vals = df["x"].to_numpy()
+    y_vals = df["y"].to_numpy()
+
+    # Compute threshold
+    if direction == "above":
+        x_threshold = float(np.quantile(x_vals, x_quantile))
+        mask = x_vals >= x_threshold
+    else:
+        x_threshold = float(np.quantile(x_vals, 1 - x_quantile))
+        mask = x_vals <= x_threshold
+
+    y_filtered = y_vals[mask]
+
+    info = {
+        "n": int(len(df)),
+        "n_filtered": int(y_filtered.size),
+        "x_quantile": float(x_quantile),
+        "x_threshold": float(x_threshold),
+        "direction": direction,
+        "pct_filtered": float(y_filtered.size / len(df) * 100) if len(df) > 0 else 0.0,
+    }
+
+    if y_filtered.size < 10:
+        return {"mean": np.nan, "median": np.nan}, info
+
+    # Compute basic stats
+    stats = {
+        "mean": float(np.mean(y_filtered)),
+        "median": float(np.median(y_filtered)),
+        "std": float(np.std(y_filtered)),
+        "pct_positive": float((y_filtered > 0).mean() * 100),
+    }
+
+    # Add optional quantiles
+    if y_quantiles:
+        for q in y_quantiles:
+            q_key = f"q{int(q * 100)}"
+            stats[q_key] = float(np.quantile(y_filtered, q))
+
+    return stats, info
