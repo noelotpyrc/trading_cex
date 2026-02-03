@@ -151,6 +151,45 @@ def _calc_stop_from_close(direction: str, close_price: float, stop_loss_pct: flo
     return close_price * (1 - stop_loss_pct / 100)
 
 
+def _dynamic_stop_loss_pct(
+    df: pd.DataFrame,
+    entry_bar_idx: int,
+    exit_config: dict,
+) -> float | None:
+    """
+    Compute a volatility-based stop distance using only information available
+    prior to the entry bar to avoid lookahead.
+
+    dynamic_stop = min(stop_vol * stop_multiplier, stop_cutoff)
+
+    - stop_vol is read from (entry_bar_idx - 1) row, using stop_vol_col
+    - stop_cutoff is in return units (e.g. 0.005 == 50bps)
+    - returned value is stop_loss_pct in *percent* units, negative for loss
+      (e.g. -0.5 means -50bps).
+    """
+    vol_col = exit_config.get("stop_vol_col", "parkinson_30")
+    stop_multiplier = float(exit_config.get("stop_multiplier", 4.0))
+
+    if "stop_cutoff_bps" in exit_config:
+        stop_cutoff = float(exit_config["stop_cutoff_bps"]) / 10000.0
+    else:
+        stop_cutoff = float(exit_config.get("stop_cutoff", 0.005))
+        # Allow users to pass 50 (bps) by mistake; treat >1 as bps.
+        if stop_cutoff > 1:
+            stop_cutoff = stop_cutoff / 10000.0
+
+    vol_idx = entry_bar_idx - 1
+    if vol_idx < 0:
+        return None
+
+    stop_vol = df.iloc[vol_idx][vol_col]
+    if pd.isna(stop_vol):
+        return None
+
+    dynamic_stop = min(float(stop_vol) * stop_multiplier, stop_cutoff)
+    return -dynamic_stop * 100.0
+
+
 def _calc_pnl_pct(entry_price: float, exit_price: float, direction: str, fee_pct: float) -> float:
     if direction == "long":
         pnl = (exit_price / entry_price - 1) * 100
@@ -177,6 +216,7 @@ def _exit_trade(
         "exit_price": exit_price,
         "bars_held": bar_idx - position["entry_bar"],
         "exit_reason": reason,
+        "stop_loss_pct": position.get("stop_loss_pct"),
         "pnl_pct": pnl_pct,
     })
 
@@ -274,13 +314,23 @@ def check_exit_signal(df: pd.DataFrame, bar_idx: int, position: dict, config: di
     bars_held = bar_idx - position["entry_bar"]
 
     if bars_held == 0:
-        stop_price = _calc_stop_from_close(position["direction"], bar["close"], config["stop_loss_pct"])
+        stop_loss_pct = config.get("stop_loss_pct")
+        if config.get("use_dynamic_stop") or config.get("dynamic_stop"):
+            dyn_stop_loss_pct = _dynamic_stop_loss_pct(df, position["entry_bar"], config)
+            if dyn_stop_loss_pct is not None:
+                stop_loss_pct = dyn_stop_loss_pct
+
+        if stop_loss_pct is None:
+            raise ValueError("stop_loss_pct is required (or provide dynamic stop settings).")
+
+        stop_price = _calc_stop_from_close(position["direction"], bar["close"], float(stop_loss_pct))
         return {
             "order_type": "stop",
             "price": stop_price,
             "reason": "stop_loss",
             "expiry_bars": config["expiry_bars"],
             "placed_at": "close",
+            "stop_loss_pct": float(stop_loss_pct),
         }
 
     if bars_held >= config["expiry_bars"]:
@@ -341,6 +391,8 @@ def run_backtest(df: pd.DataFrame, entry_config: dict, exit_config: dict) -> pd.
             # Exit signal evaluated at bar close; stop/time-exit orders placed after close.
             exit_signal = check_exit_signal(df, bar_idx, position, exit_config)
             if exit_signal:
+                if exit_signal.get("order_type") == "stop" and "stop_loss_pct" in exit_signal:
+                    position["stop_loss_pct"] = exit_signal["stop_loss_pct"]
                 # Create exit order at bar close; fills on subsequent bars via process_order.
                 pending_order = create_exit_order(exit_signal, position, bar_idx, exit_config)
 
@@ -424,4 +476,3 @@ def analyze_results(trades_df: pd.DataFrame) -> None:
     print(f"Total ROI: {total_roi:.2f}%")
     print(f"Final Capital: ${capital:,.2f}")
     print()
-

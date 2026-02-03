@@ -15,7 +15,7 @@ sys.path.append(str(PROJECT_ROOT))
 from apps.btc1m_trade_analysis import vwap_session_new_strategy_simple_backtest as strat
 
 
-def _build_required_cols(entry_config: dict) -> list[str]:
+def _build_required_cols(entry_config: dict, exit_config: dict) -> list[str]:
     cols = {
         strat.DATETIME_COL,
         "open",
@@ -27,6 +27,11 @@ def _build_required_cols(entry_config: dict) -> list[str]:
         cols.add(filt["col"])
     cols.add(entry_config["direction"]["long_rule"]["col"])
     cols.add(entry_config["direction"]["short_rule"]["col"])
+
+    # Exit-side feature columns (e.g., dynamic stop based on prior-bar volatility).
+    if exit_config.get("use_dynamic_stop") or exit_config.get("dynamic_stop"):
+        cols.add(exit_config.get("stop_vol_col", "parkinson_30"))
+
     return sorted(cols)
 
 
@@ -139,7 +144,7 @@ def grid_search_exit_configs(
     include_long = "long" in directions or "both" in directions
     include_short = "short" in directions or "both" in directions
 
-    cols = _build_required_cols(entry_base)
+    cols = _build_required_cols(entry_base, exit_base)
     data_by_year = {year: _load_data(data_path, cols, year, chunksize) for year in years}
 
     rows = []
@@ -257,7 +262,7 @@ def main() -> None:
         )
         return
 
-    cols = _build_required_cols(entry_config)
+    cols = _build_required_cols(entry_config, exit_config)
     df = _load_data(data_path, cols, args.year, args.chunksize)
 
     print(f"Loaded rows: {len(df):,}")
