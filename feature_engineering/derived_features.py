@@ -362,6 +362,151 @@ def premium_vol_ratio(premium: pd.Series,
     return vol_fast / vol_slow.replace(0, np.nan)
 # try fast window as 24, and slow window as 48 and 168
 
+# --- OI/Price Delta Z-Scores and Interactions ---
+
+def oi_delta_zscore(
+    oi: pd.Series,
+    delta_window: int,
+    zscore_window: int,
+) -> pd.Series:
+    """
+    OI delta z-score: change in OI over delta_window, then z-score over zscore_window.
+    
+    Args:
+        oi: Open interest series
+        delta_window: Window for OI change (delta)
+        zscore_window: Window for z-score normalization
+    
+    Returns:
+        pd.Series: Z-score of OI delta
+    """
+    oi_delta = oi.diff(delta_window)
+    return zscore(oi_delta, zscore_window)
+# Use: delta_window ∈ {1, 4, 24}, zscore_window = 168, 720
+
+
+def price_delta_zscore(
+    close: pd.Series,
+    delta_window: int,
+    zscore_window: int,
+) -> pd.Series:
+    """
+    Price delta z-score: log return over delta_window, then z-score over zscore_window.
+    
+    Args:
+        close: Close price series
+        delta_window: Window for log return
+        zscore_window: Window for z-score normalization
+    
+    Returns:
+        pd.Series: Z-score of price delta (log return)
+    """
+    log_ret = np.log(close / close.shift(delta_window))
+    return zscore(log_ret, zscore_window)
+# No need to use this function directly
+
+
+def oi_price_delta_interaction(
+    oi: pd.Series,
+    close: pd.Series,
+    delta_window: int,
+    zscore_window: int,
+) -> tuple[pd.Series, pd.Series]:
+    """
+    Interaction between OI delta z-score and price delta z-score.
+    
+    Creates two features:
+    - product: oi_delta_z * price_delta_z (positive = aligned, negative = divergent)
+    - ratio: oi_delta_z / price_delta_z (>1 = OI leading, <1 = price leading)
+    
+    Args:
+        oi: Open interest series
+        close: Close price series
+        delta_window: Window for delta calculations
+        zscore_window: Window for z-score normalization
+    
+    Returns:
+        Tuple of (product, ratio)
+    """
+    oi_z = oi_delta_zscore(oi, delta_window, zscore_window)
+    price_z = price_delta_zscore(close, delta_window, zscore_window)
+    
+    product = oi_z * price_z
+    ratio = oi_z / price_z.replace(0, np.nan)
+    ratio = ratio.clip(-5, 5)  # Cap extreme ratios
+    
+    return product, ratio
+# Use: delta_window ∈ {1, 4, 24}, zscore_window = 168, 720
+
+
+def oi_price_direction_flags(
+    oi: pd.Series,
+    close: pd.Series,
+    window: int,
+) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+    """
+    Four binary flags indicating OI and price move directions.
+    
+    Creates four features:
+    - oi_up_price_up: 1 if both OI and price increased over window
+    - oi_up_price_down: 1 if OI up and price down (accumulation)
+    - oi_down_price_up: 1 if OI down and price up (short squeeze / distribution)
+    - oi_down_price_down: 1 if both OI and price decreased (liquidation)
+    
+    Args:
+        oi: Open interest series
+        close: Close price series
+        window: Lookback window for direction
+    
+    Returns:
+        Tuple of 4 binary flag series (NaN where OI is missing)
+    """
+    oi_change = oi.diff(window)
+    price_change = close.diff(window)
+    
+    oi_up = oi_change > 0
+    oi_down = oi_change < 0
+    price_up = price_change > 0
+    price_down = price_change < 0
+    
+    flag_oi_up_price_up = (oi_up & price_up).astype(float)
+    flag_oi_up_price_down = (oi_up & price_down).astype(float)
+    flag_oi_down_price_up = (oi_down & price_up).astype(float)
+    flag_oi_down_price_down = (oi_down & price_down).astype(float)
+    
+    # Propagate NaN where OI or OI change is NaN
+    oi_invalid = oi.isna() | oi_change.isna()
+    flag_oi_up_price_up[oi_invalid] = np.nan
+    flag_oi_up_price_down[oi_invalid] = np.nan
+    flag_oi_down_price_up[oi_invalid] = np.nan
+    flag_oi_down_price_down[oi_invalid] = np.nan
+    
+    return flag_oi_up_price_up, flag_oi_up_price_down, flag_oi_down_price_up, flag_oi_down_price_down
+# Use: window ∈ {24, 168, 720}
+
+
+def positive_premium_pct(
+    premium: pd.Series,
+    window: int,
+) -> pd.Series:
+    """
+    Percentage of bars with positive premium over past window.
+    
+    Indicates bullish/bearish funding sentiment persistence.
+    Values > 0.5 = mostly bullish funding, < 0.5 = mostly bearish.
+    
+    Args:
+        premium: Premium index series
+        window: Lookback window
+    
+    Returns:
+        pd.Series: Percentage [0, 1] of positive premium bars
+    """
+    is_positive = (premium > 0).astype(float)
+    return is_positive.rolling(window, min_periods=window).mean()
+# Use: window ∈ {48, 168, 720}
+
+
 # --- Spot regime ---
 
 def spot_dominance(spot_volume: pd.Series, perp_volume: pd.Series) -> pd.Series:
@@ -769,6 +914,58 @@ def breakout_distance_from_low(close: pd.Series, window: int) -> pd.Series:
     rolling_low = rolling_lowest(close, window)
     return np.log(close / rolling_low)
 # Use: window ∈ {168, 720, 2160}
+
+
+def ema_clv_interaction(
+    ema_flag: pd.Series,
+    clv: pd.Series,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """
+    Interaction between EMA stack flag and CLV (close location value).
+    
+    Creates three features using one-hot encoding of flag:
+    - g0: clv * 1[flag==0] (neutral)
+    - g1: clv * 1[flag==1] (bullish)
+    - g2: clv * 1[flag==-1] (bearish)
+    
+    Args:
+        ema_flag: EMA stack flag (-1 bearish, 0 neutral, 1 bullish)
+        clv: Close location value [0, 1]
+    
+    Returns:
+        Tuple of (neutral_int, bull_int, bear_int)
+    """
+    g0 = clv * (ema_flag == 0).astype(float)   # neutral
+    g1 = clv * (ema_flag == 1).astype(float)   # bullish
+    g2 = clv * (ema_flag == -1).astype(float)  # bearish
+    
+    return g0, g1, g2
+
+
+def ema_breakout_interaction(
+    ema_flag: pd.Series,
+    breakout_dist: pd.Series,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """
+    Interaction between EMA stack flag and breakout distance.
+    
+    Creates three features using one-hot encoding of flag:
+    - g0: breakout_dist * 1[flag==0] (neutral)
+    - g1: breakout_dist * 1[flag==1] (bullish)
+    - g2: breakout_dist * 1[flag==-1] (bearish)
+    
+    Args:
+        ema_flag: EMA stack flag (-1 bearish, 0 neutral, 1 bullish)
+        breakout_dist: Breakout distance (log scale)
+    
+    Returns:
+        Tuple of (neutral_int, bull_int, bear_int)
+    """
+    g0 = breakout_dist * (ema_flag == 0).astype(float)   # neutral
+    g1 = breakout_dist * (ema_flag == 1).astype(float)   # bullish
+    g2 = breakout_dist * (ema_flag == -1).astype(float)  # bearish
+    
+    return g0, g1, g2
 
 
 # =============================================================================
@@ -1420,3 +1617,95 @@ def churn_ratio(taker_buy: pd.Series, volume: pd.Series,
     churn = sum_abs_imb / (abs_sum_imb + eps)
     return np.log1p(churn - 1.0)  # equals log(churn) when churn>0, nicer near 1
 # Use: window ∈ {24, 48, 168, 720}
+
+
+# =============================================================================
+# OHLC VOLATILITY ESTIMATORS
+# =============================================================================
+
+_VOL_EPS = 1e-12
+
+
+def _safe_ohlc(
+    open_: pd.Series, high: pd.Series, low: pd.Series,
+    close: pd.Series, eps: float = _VOL_EPS,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Clip prices to eps and enforce H >= max(O,C), L <= min(O,C).
+    Returns numpy arrays (o, h, l, c).
+    """
+    o = open_.clip(lower=eps).to_numpy()
+    h = high.clip(lower=eps).to_numpy()
+    l = low.clip(lower=eps).to_numpy()
+    c = close.clip(lower=eps).to_numpy()
+
+    oc_max = np.maximum(o, c)
+    oc_min = np.minimum(o, c)
+    h = np.maximum(h, oc_max)
+    l = np.minimum(l, oc_min)
+    return o, h, l, c
+
+
+def garman_klass_var(
+    open_: pd.Series, high: pd.Series, low: pd.Series,
+    close: pd.Series, eps: float = _VOL_EPS,
+) -> pd.Series:
+    """
+    Garman–Klass per-bar variance estimate (log-return² units).
+
+    Formula:  v_t = 0.5 * ln(H/L)² - (2 ln2 - 1) * ln(C/O)²
+
+    Safe-price guards applied (clip + enforce H/L ordering).
+    Use with rolling mean + sqrt for realized vol, or with
+    ewma_variance + sqrt for EWMA vol.
+    """
+    o, h, l, c = _safe_ohlc(open_, high, low, close, eps)
+    hl = np.log(h / l)
+    co = np.log(c / o)
+    var_bar = 0.5 * (hl ** 2) - (2.0 * np.log(2.0) - 1.0) * (co ** 2)
+    return pd.Series(np.maximum(var_bar, 0.0), index=open_.index)
+
+
+def rogers_satchell_var(
+    open_: pd.Series, high: pd.Series, low: pd.Series,
+    close: pd.Series, eps: float = _VOL_EPS,
+) -> pd.Series:
+    """
+    Rogers–Satchell per-bar variance estimate (log-return² units).
+
+    Formula:  v_t = ln(H/O)*ln(H/C) + ln(L/O)*ln(L/C)
+
+    More robust to drift than Parkinson or close-to-close estimators.
+    Safe-price guards applied (same as garman_klass_var).
+    """
+    o, h, l, c = _safe_ohlc(open_, high, low, close, eps)
+    ho = np.log(h / o)
+    hc = np.log(h / c)
+    lo = np.log(l / o)
+    lc = np.log(l / c)
+    var_bar = ho * hc + lo * lc
+    return pd.Series(np.maximum(var_bar, 0.0), index=open_.index)
+
+
+def garman_klass_vol(
+    open_: pd.Series, high: pd.Series, low: pd.Series,
+    close: pd.Series, window: int, eps: float = _VOL_EPS,
+) -> pd.Series:
+    """
+    Garman–Klass realized volatility: sqrt(rolling_mean(GK variance, window)).
+    """
+    var = garman_klass_var(open_, high, low, close, eps)
+    return np.sqrt(var.rolling(window).mean())
+# Use: window ∈ {24, 168, 720}
+
+
+def rogers_satchell_vol(
+    open_: pd.Series, high: pd.Series, low: pd.Series,
+    close: pd.Series, window: int, eps: float = _VOL_EPS,
+) -> pd.Series:
+    """
+    Rogers–Satchell realized volatility: sqrt(rolling_mean(RS variance, window)).
+    """
+    var = rogers_satchell_var(open_, high, low, close, eps)
+    return np.sqrt(var.rolling(window).mean())
+# Use: window ∈ {24, 168, 720}

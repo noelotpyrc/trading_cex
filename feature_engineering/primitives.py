@@ -127,6 +127,26 @@ def ewma_volatility(close: pd.Series, span: int) -> pd.Series:
     return np.sqrt(log_ret.pow(2).ewm(span=span, adjust=False).mean())
 
 
+def ewma_variance(var_series: pd.Series, *, halflife: float) -> pd.Series:
+    """
+    EWMA smoothing of a per-bar variance series.
+
+    Generic smoother for any pre-computed variance estimator
+    (e.g., Garman-Klass, Rogers-Satchell).  Unlike ewma_volatility,
+    this does NOT compute its own squared returns – it expects the
+    caller to provide the variance series.
+
+    Args:
+        var_series: Per-bar variance estimates (log-return² units)
+        halflife: Half-life in bars. For 1-min bars, halflife=60 ≈ 1 hour.
+
+    Returns:
+        EWMA-smoothed variance (same units as input)
+    """
+    v = pd.to_numeric(var_series, errors="coerce")
+    return v.ewm(halflife=halflife, adjust=False).mean()
+
+
 def true_range(high: pd.Series, low: pd.Series, close: pd.Series) -> pd.Series:
     """
     True Range: max(H-L, |H-C_{t-1}|, |L-C_{t-1}|).
