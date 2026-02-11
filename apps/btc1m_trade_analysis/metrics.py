@@ -6,8 +6,38 @@ from typing import Literal, Tuple, Dict, Any
 
 try:
     from scipy.stats import wasserstein_distance as _wdist
+    from scipy import stats as _sp_stats
 except Exception:
     _wdist = None
+    _sp_stats = None
+
+
+def tail_exceedance_rate(
+    Z: pd.Series,
+    level: float = 0.98,
+    two_sided: bool = True,
+) -> float:
+    """
+    Exceedance rate under a Normal reference threshold.
+
+    Returns the empirical probability that standardised values exceed the
+    threshold implied by `level`.  Under a true Normal:
+        two_sided=True  → expected rate = 1 - level   (e.g. 0.02 for level=0.98)
+        two_sided=False → expected rate = 1 - level   (right tail only)
+
+    Divide the result by (1 - level) to get the exceedance *ratio* vs Normal.
+    """
+    if _sp_stats is None:
+        raise ImportError("scipy.stats is required for tail_exceedance_rate")
+    z = pd.to_numeric(Z, errors="coerce").dropna()
+    alpha = 1.0 - level
+    if two_sided:
+        thr = _sp_stats.norm.ppf(1.0 - alpha / 2.0)
+        exceed = z.abs() > thr
+    else:
+        thr = _sp_stats.norm.ppf(level)
+        exceed = z > thr
+    return float(exceed.mean())
 
 
 ScaleMethod = Literal["iqr", "q90q10", "mad"]
